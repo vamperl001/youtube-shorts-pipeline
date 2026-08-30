@@ -1,0 +1,66 @@
+name: selfhosting
+display_name: "Selfhosting & Homelab News"
+
+script:
+  tone: "confident practitioner, anti-hype, homelab insider"
+  pacing: "fact-dense, punchy, one idea per sentence"
+  hooks:
+    - pattern: "contra_cloud"
+      template: "This {topic} runs in my basement — not on someone else's server."
+    - pattern: "cost_trap"
+      template: "{topic} costs X a month in the cloud. Self-hosted: once."
+    - pattern: "breaking"
+      template: "Just dropped: {topic} — and your homelab needs it tonight."
+    - pattern: "mistake"
+      template: "You are running {topic} wrong. Fix these three things."
+  cta_variants:
+    - "Follow for daily self-hosting breakdowns."
+    - "Comment: what is in your rack right now?"
+    - "Save this before your next cloud invoice."
+  word_count: "140 to 165"
+  forbidden: ["like and subscribe", "smash that bell", "what's up guys"]
+
+visuals:
+  style: "dunkle Serverräume, Terminal-Fenster, LED-Blinken, Netzwerkkabel, Dashboard-Grafiken"
+  mood: "technisch, kontrolliert, leicht dystopisch-cool"
+  color_palette: ["#0D1117", "#161B22", "#00FF88", "#1F6FEB"]
+  subjects:
+    prefer:
+      - "rack servers with blinking LEDs"
+      - "terminal windows with green text"
+      - "docker dashboard on monitor"
+      - "network cables close up"
+      - "NAS enclosure in dark room"
+    avoid:
+      - "stock photo people smiling at laptops"
+      - "clipart clouds"
+      - "neon cyberpunk kitsch"
+  prompt_suffix: "photorealistic, moody lighting, high detail, 4K"
+
+voice:
+  pace: "zügig, ~155 wpm"
+  energy: "nüchtern-sachlich mit Geheimtipp-Charisma"
+  suggested_voices:
+    edge_tts:
+      de: "de-DE-ConradNeural"
+      en: "en-US-GuyNeural"
+
+captions:
+  highlight_color: "#00FF88"
+  font_weight: "bold"
+  position: "lower_third"
+
+music:
+  mood: "elektronisch-minimal, treibend ohne Vocals"
+  energy: "medium"
+
+thumbnail:
+  style: "dunkler Hintergrund, Terminalgrün-Akzent, Device-Foto oder Logowall"
+  text_position: "left_aligned"
+
+discovery:
+  reddit: ["selfhosted", "homelab", "DataHoarder", "docker"]
+  rss:
+    - "https://hnrss.org/frontpage"
+    - "https://selfh.st/rss/"
+    - "https://feeds.macrumors.com/MacRumors-All"
