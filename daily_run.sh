@@ -18,7 +18,24 @@ else
     echo "ERROR: GEMINI_KEY_FILE $GEMINI_KEY_FILE nicht gefunden" >> "$LOG"
     exit 1
 fi
+
+# Dynamisch bestes Gemini Modell (statt hardcodiert)
+if [ -z "${GEMINI_MODEL:-}" ]; then
+  GEMINI_MODEL=$(curl -s -H "x-goog-api-key: $GEMINI_API_KEY" "https://generativelanguage.googleapis.com/v1beta/models" | python3 -c "import json,sys; d=json.load(sys.stdin); ms=[m['name'].split('/')[-1] for m in d.get('models',[]) if 'generateContent' in str(m.get('supportedGenerationMethods',[]))]; print(sorted(ms)[-1] if ms else 'gemini-2.0-flash')")
+  export GEMINI_MODEL
+fi
 export GEMINI_MAX_TOKENS=8192
+# LITELLM_MODEL nicht hardcoden - llm.py waehlt openrouter/free mit Fallback-Kette (siehe fix 09.09.)
+# Fallback: falls doch gesetzt, dann korrekten Pfad nutzen
+if [ -z "${LITELLM_MODEL:-}" ]; then
+  export LITELLM_MODEL="openrouter/free"
+fi
+# Zentraler Key (raw file, Fallback data/.env)
+if [ -f /srv/docker/hermes/exchange/env/openrouter.env ]; then
+  export OPENROUTER_API_KEY="$(head -n1 /srv/docker/hermes/exchange/env/openrouter.env | tr -d '\r\n ')"
+else
+  export OPENROUTER_API_KEY="$(grep OPENROUTER_API_KEY /srv/docker/hermes/data/.env 2>/dev/null | cut -d= -f2 | tr -d '\"'\"'')"
+fi
 export PATH="$VENV:$PATH"
 
 echo "=== Daily MoneyMaker $DATE ===" >> "$LOG"

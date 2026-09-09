@@ -94,7 +94,37 @@ def call_llm(prompt: str, provider: str | None = None, max_tokens: int = 1500) -
     elif provider == "claude_cli":
         return call_claude_cli(prompt, max_tokens=max_tokens)
     elif provider == "gemini":
-        return _call_gemini(prompt, max_tokens)
+        try:
+            return _call_gemini(prompt, max_tokens)
+        except RuntimeError as e:
+            if "503" in str(e) or "429" in str(e) or "404" in str(e):
+                import os, pathlib
+                # Zentraler Key (exchange/env/openrouter.env raw key, Fallback hermes/data/.env mit Prefix)
+                for p in ["/srv/docker/hermes/exchange/env/openrouter.env", "/srv/docker/hermes/data/.env"]:
+                    try:
+                        txt = pathlib.Path(p).read_text().strip()
+                        if not txt:
+                            continue
+                        if "OPENROUTER_API_KEY=" in txt:
+                            os.environ["OPENROUTER_API_KEY"] = txt.split("OPENROUTER_API_KEY=")[1].split()[0].strip().strip('"').strip("'")
+                        elif txt.startswith("sk-or-v1-"):
+                            os.environ["OPENROUTER_API_KEY"] = txt.split()[0].strip()
+                        else:
+                            continue
+                        if os.environ["OPENROUTER_API_KEY"].startswith("sk-or-v1-"):
+                            break
+                    except Exception:
+                        pass
+                # openrouter/free ist generischer Router - bei "No endpoints" auf konkretes Free-Modell ausweichen
+                for m in ["openrouter/free", "openrouter/google/gemini-2.0-flash-exp:free", "openrouter/meta-llama/llama-3.1-8b-instruct:free"]:
+                    os.environ["LITELLM_MODEL"] = m
+                    try:
+                        return _call_litellm(prompt, max_tokens)
+                    except Exception as e2:
+                        if "No endpoints" in str(e2) and m != "openrouter/meta-llama/llama-3.1-8b-instruct:free":
+                            continue
+                        raise
+            raise
     elif provider == "minimax":
         return _call_minimax(prompt, max_tokens)
     elif provider == "openai":
