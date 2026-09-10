@@ -115,13 +115,14 @@ def call_llm(prompt: str, provider: str | None = None, max_tokens: int = 1500) -
                             break
                     except Exception:
                         pass
-                # openrouter/free ist generischer Router - bei "No endpoints" auf konkretes Free-Modell ausweichen
-                for m in ["openrouter/free", "openrouter/google/gemini-2.0-flash-exp:free", "openrouter/meta-llama/llama-3.1-8b-instruct:free"]:
+                # openrouter/free ist generischer Router - bei Rate-Limit/No endpoints auf konkrete freie Modelle ausweichen
+                for m in ["openrouter/free", "openrouter/google/gemma-4-26b-a4b-it:free", "openrouter/inclusionai/ling-3.0-flash-fin:free", "openrouter/liquid/lfm-2.5-2.6b:free", "openrouter/nex-agi/nex-n2.5-mini:free"]:
                     os.environ["LITELLM_MODEL"] = m
                     try:
                         return _call_litellm(prompt, max_tokens)
                     except Exception as e2:
-                        if "No endpoints" in str(e2) and m != "openrouter/meta-llama/llama-3.1-8b-instruct:free":
+                        msg = str(e2)
+                        if (("No endpoints" in msg or "unavailable for free" in msg or "rate-limited" in msg.lower() or "RateLimit" in msg) and m != "openrouter/nex-agi/nex-n2.5-mini:free"):
                             continue
                         raise
             raise
