@@ -25,11 +25,8 @@ if [ -z "${GEMINI_MODEL:-}" ]; then
   export GEMINI_MODEL
 fi
 export GEMINI_MAX_TOKENS=8192
-# LITELLM_MODEL nicht hardcoden - llm.py waehlt openrouter/free mit Fallback-Kette (siehe fix 09.09.)
-# Fallback: falls doch gesetzt, dann korrekten Pfad nutzen
-if [ -z "${LITELLM_MODEL:-}" ]; then
-  export LITELLM_MODEL="openrouter/free"
-fi
+# Paid Spar-Modell (ca. 1-2ct/Video, 8.74$ Guthaben vorhanden) - stabil statt :free Roulette
+export LITELLM_MODEL="openrouter/google/gemini-2.0-flash-001"
 # Zentraler Key (raw file, Fallback data/.env)
 if [ -f /srv/docker/hermes/exchange/env/openrouter.env ]; then
   export OPENROUTER_API_KEY="$(head -n1 /srv/docker/hermes/exchange/env/openrouter.env | tr -d '\r\n ')"

@@ -96,9 +96,9 @@ def call_llm(prompt: str, provider: str | None = None, max_tokens: int = 1500) -
     elif provider == "gemini":
         try:
             return _call_gemini(prompt, max_tokens)
-        except RuntimeError as e:
-            if "503" in str(e) or "429" in str(e) or "404" in str(e):
-                import os, pathlib
+        except (RuntimeError, Exception) as e:
+            msg = str(e)
+            if any(x in msg for x in ["503", "429", "404", "timeout", "Timeout", "timed out", "ReadTimeout"]):
                 # Zentraler Key (exchange/env/openrouter.env raw key, Fallback hermes/data/.env mit Prefix)
                 for p in ["/srv/docker/hermes/exchange/env/openrouter.env", "/srv/docker/hermes/data/.env"]:
                     try:
@@ -115,14 +115,14 @@ def call_llm(prompt: str, provider: str | None = None, max_tokens: int = 1500) -
                             break
                     except Exception:
                         pass
-                # openrouter/free ist generischer Router - bei Rate-Limit/No endpoints auf konkrete freie Modelle ausweichen
-                for m in ["openrouter/free", "openrouter/google/gemma-4-26b-a4b-it:free", "openrouter/inclusionai/ling-3.0-flash-fin:free", "openrouter/liquid/lfm-2.5-2.6b:free", "openrouter/nex-agi/nex-n2.5-mini:free"]:
+                # openrouter/free ist generischer Router - bei Rate-Limit/No endpoints auf konkrete freie Modelle, zuletzt bezahltes Gemini (~2ct) ausweichen
+                for m in ["openrouter/free", "openrouter/google/gemma-4-26b-a4b-it:free", "openrouter/inclusionai/ling-3.0-flash-fin:free", "openrouter/liquid/lfm-2.5-2.6b:free", "openrouter/nex-agi/nex-n2.5-mini:free", "openrouter/google/gemini-2.0-flash-001"]:
                     os.environ["LITELLM_MODEL"] = m
                     try:
                         return _call_litellm(prompt, max_tokens)
                     except Exception as e2:
                         msg = str(e2)
-                        if (("No endpoints" in msg or "unavailable for free" in msg or "rate-limited" in msg.lower() or "RateLimit" in msg) and m != "openrouter/nex-agi/nex-n2.5-mini:free"):
+                        if (("No endpoints" in msg or "unavailable for free" in msg or "rate-limited" in msg.lower() or "RateLimit" in msg) and m != "openrouter/google/gemini-2.0-flash-001"):
                             continue
                         raise
             raise
