@@ -25,8 +25,10 @@ if [ -z "${GEMINI_MODEL:-}" ]; then
   export GEMINI_MODEL
 fi
 export GEMINI_MAX_TOKENS=8192
-# Paid Spar-Modell (ca. 1-2ct/Video, 8.74$ Guthaben vorhanden) - stabil statt :free Roulette
-export LITELLM_MODEL="openrouter/google/gemini-2.0-flash-001"
+# Kein Hardcode - llm.py holt freie Modelle dynamisch via /api/v1/models, Fallback via env FALLBACK_MODELS / PAID_FALLBACK
+# Optional setzen: export FALLBACK_MODELS='["openrouter/free"]' oder PAID_FALLBACK="openrouter/google/gemini-2.0-flash-001"
+# Default: openrouter/free + dynamische :free Liste + bezahlt gemini-2.0-flash-001 (~2ct)
+unset LITELLM_MODEL 2>/dev/null || true
 # Zentraler Key (raw file, Fallback data/.env)
 if [ -f /srv/docker/hermes/exchange/env/openrouter.env ]; then
   export OPENROUTER_API_KEY="$(head -n1 /srv/docker/hermes/exchange/env/openrouter.env | tr -d '\r\n ')"

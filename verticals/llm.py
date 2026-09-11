@@ -115,14 +115,34 @@ def call_llm(prompt: str, provider: str | None = None, max_tokens: int = 1500) -
                             break
                     except Exception:
                         pass
-                # openrouter/free ist generischer Router - bei Rate-Limit/No endpoints auf konkrete freie Modelle, zuletzt bezahltes Gemini (~2ct) ausweichen
-                for m in ["openrouter/free", "openrouter/google/gemma-4-26b-a4b-it:free", "openrouter/inclusionai/ling-3.0-flash-fin:free", "openrouter/liquid/lfm-2.5-2.6b:free", "openrouter/nex-agi/nex-n2.5-mini:free", "openrouter/google/gemini-2.0-flash-001"]:
+                # Fallback-Kette ohne Hardcode: erst generisch, dann env FALLBACK_MODELS, zuletzt bezahlt
+                import json as _json
+                fb = os.environ.get("FALLBACK_MODELS", "")
+                if fb:
+                    try:
+                        models = _json.loads(fb) if fb.strip().startswith("[") else [x.strip() for x in fb.split(",") if x.strip()]
+                    except Exception:
+                        models = ["openrouter/free"]
+                else:
+                    # dynamisch freie Modelle holen, sonst Default-Kette
+                    try:
+                        import requests as _rq
+                        r = _rq.get("https://openrouter.ai/api/v1/models", timeout=5)
+                        models = [m["id"] for m in r.json().get("data", []) if ":free" in m["id"]][:3]
+                        models = ["openrouter/free"] + [f"openrouter/{m}" for m in models]
+                    except Exception:
+                        models = ["openrouter/free"]
+                # immer bezahltes Fallback anhängen (aus env oder Default)
+                paid = os.environ.get("PAID_FALLBACK", "openrouter/google/gemini-2.0-flash-001")
+                if paid not in models:
+                    models.append(paid)
+                for m in models:
                     os.environ["LITELLM_MODEL"] = m
                     try:
                         return _call_litellm(prompt, max_tokens)
                     except Exception as e2:
                         msg = str(e2)
-                        if (("No endpoints" in msg or "unavailable for free" in msg or "rate-limited" in msg.lower() or "RateLimit" in msg) and m != "openrouter/google/gemini-2.0-flash-001"):
+                        if (("No endpoints" in msg or "unavailable for free" in msg or "rate-limited" in msg.lower() or "RateLimit" in msg) and m != models[-1]):
                             continue
                         raise
             raise
