@@ -94,8 +94,33 @@ def _container_screenshot(url: str, out_path: Path, width: int, height: int) -> 
     return False
 
 
+def _og_image(url: str, out_path: Path) -> bool:
+    """Versuche og:image / twitter:image direkt zu laden (kein Screenshot nötig)."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "verticals/1.0"})
+        html = urllib.request.urlopen(req, timeout=10).read().decode(errors="ignore")
+        m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+        if not m:
+            m = re.search(r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+        if m:
+            img_url = m.group(1).strip()
+            if img_url.startswith("//"):
+                img_url = "https:" + img_url
+            elif img_url.startswith("/"):
+                from urllib.parse import urljoin
+                img_url = urljoin(url, img_url)
+            return download_image(img_url, out_path, timeout=15)
+    except Exception:
+        pass
+    return False
+
+
 def screenshot_website(url: str, out_path: Path, width: int = 1200, height: int = 2000) -> bool:
-    """Echter Screenshot via Chromium-Container, Fallback: Headless-Chromium, thum.io."""
+    """og:image zuerst, dann echter Screenshot, Fallback thum.io."""
+
+    if _og_image(url, out_path):
+        log(f"og:image OK ({url[:40]})")
+        return True
 
     if _container_screenshot(url, out_path, width, height):
         return True

@@ -58,19 +58,21 @@ if [ "$RC" -ne 0 ] || [ -z "$LATEST" ] || [ "$LATEST_T" -le "$BEFORE_T" ]; then
     exit 1
 fi
 
-# 3. Hard-Cut auf 60s (YouTube Shorts Limit)
+# 3. Variabler Cut bis 180s (YT Shorts seit 15.10.2024 bis 3 Min) - an Script-Laenge angepasst
 DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$LATEST")
-if [ "$(echo "$DUR > 60" | bc)" = "1" ]; then
-    TRIMMED="${LATEST%.mp4}_60s.mp4"
-    ffmpeg -y -i "$LATEST" -t 60 -c:v copy -c:a copy "$TRIMMED" 2>/dev/null
+DUR_INT=${DUR%.*}
+[ "$DUR_INT" -gt 180 ] && DUR_INT=180
+if [ "$(echo "$DUR > 180" | bc)" = "1" ]; then
+    TRIMMED="${LATEST%.mp4}_180s.mp4"
+    ffmpeg -y -i "$LATEST" -t 180 -c:v copy -c:a copy "$TRIMMED" 2>/dev/null
     LATEST="$TRIMMED"
-    echo "Geschnitten auf 60s" >> "$LOG"
+    echo "Geschnitten auf 180s (war ${DUR}s)" >> "$LOG"
 fi
 
-# 4. Ambient Music Mix
-WORKDIR_MEDIA="$HOME/.verticals/media/work_$(basename "$LATEST" _en_60s.mp4 | sed 's/verticals_//')_en"
-DUR_INT=${DUR%.*}
-[ "$DUR_INT" -gt 60 ] && DUR_INT=60
+# 4. Ambient Music Mix - Laenge = Script-Laenge (max 180s)
+WORKDIR_MEDIA="$HOME/.verticals/media/work_$(basename "$LATEST" _en_180s.mp4 | sed 's/verticals_//;s/_180s//')_en"
+# Fallback falls kein _180s im Namen
+[ -d "$WORKDIR_MEDIA" ] || WORKDIR_MEDIA="$HOME/.verticals/media/work_$(basename "$LATEST" .mp4 | sed 's/verticals_//')_en"
 
 MUSIC_PAD="$WORKDIR_MEDIA/music_pad_daily.wav"
 mkdir -p "$WORKDIR_MEDIA"
@@ -85,7 +87,7 @@ ffmpeg -y -f lavfi -i "aevalsrc=\
 FINAL="$HOME/.verticals/media/daily_final_${DATE}.mp4"
 ffmpeg -y -i "$LATEST" -i "$MUSIC_PAD" \
   -filter_complex "[1:a]volume=0.10,afade=t=in:st=0:d=2,afade=t=out:st=$((DUR_INT-3)):d=3[m];[0:a][m]amix=inputs=2:duration=first[aout]" \
-  -map 0:v -map "[aout]" -c:v copy -c:a aac -b:a 192k -t 60 \
+  -map 0:v -map "[aout]" -c:v copy -c:a aac -b:a 192k -t $DUR_INT \
   "$FINAL" -loglevel error 2>&1
 
 # 5. Copy to exchange share
