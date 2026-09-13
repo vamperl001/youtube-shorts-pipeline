@@ -343,14 +343,9 @@ def sources_for_topic(topic: str, topic_url: str = "") -> list[dict]:
     t = topic.lower()
     sources = []
 
-    # Original-Quelle des Topics zuerst (Reddit-Thread oder Artikel)
-    if topic_url:
-        if "reddit.com" in topic_url:
-            # Thread selbst screenshoten statt Bilder runterzuladen (429-sicher)
-            old_url = topic_url.replace("www.reddit.com", "old.reddit.com")
-            sources.append({"type": "screenshot", "url": old_url, "label": "reddit_thread"})
-        elif topic_url.startswith("http"):
-            sources.append({"type": "screenshot", "url": topic_url, "label": "source_article"})
+    # Reddit-Threads NICHT screenshoten (blockt Server -> Blockseite als Bild)
+    if topic_url and "reddit.com" not in topic_url and topic_url.startswith("http"):
+        sources.append({"type": "screenshot", "url": topic_url, "label": "source_article"})
 
     # HN-Diskussion immer versuchen (Algolia API, kein Rate-Limit)
     hn = fetch_hn_discussion(topic)
@@ -403,9 +398,9 @@ def sources_for_topic(topic: str, topic_url: str = "") -> list[dict]:
         if tool in t:
             sources.append({"type": "screenshot", "url": url})
 
-    # Fallback: generic self-hosting
+    # Fallback: generic self-hosting (Reddit blockt Server, GitHub klappt)
     if not sources:
-        sources.append({"type": "reddit", "subreddit": "selfhosted"})
+        sources.append({"type": "screenshot", "url": "https://github.com/trending", "label": "github"})
 
     # Doppelte Screenshot-URLs entfernen (z.B. Artikel == HN-Story)
     seen: set[str] = set()

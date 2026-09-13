@@ -61,7 +61,16 @@ def main():
 
     print("\nOpening browser for Google sign-in...")
     flow = InstalledAppFlow.from_client_secrets_file(client_secrets, SCOPES)
-    creds = flow.run_local_server(port=0)
+    # Headless: try local server, fallback to console URL
+    try:
+        creds = flow.run_local_server(port=0)
+    except Exception as e:
+        print(f"Local server failed ({e}), falling back to manual code...")
+        auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
+        print(f"\nPlease visit this URL in your browser:\n{auth_url}\n")
+        code = input("Enter the authorization code: ").strip()
+        flow.fetch_token(code=code)
+        creds = flow.credentials
 
     fd = os.open(str(TOKEN_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
