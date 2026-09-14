@@ -26,6 +26,8 @@ class RedditSource(TopicSource):
             return False
 
     def fetch_topics(self, limit: int = 10) -> list[TopicCandidate]:
+        if not self.subreddits:
+            return []
         topics = []
         per_sub = max(1, limit // len(self.subreddits))
 

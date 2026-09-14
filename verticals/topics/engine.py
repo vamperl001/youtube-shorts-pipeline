@@ -67,10 +67,7 @@ class TopicEngine:
                 if name == "reddit" and "subreddits" not in src_cfg:
                     niche_subs = NICHE_TO_SUBREDDITS.get(self._niche, [])
                     niche_subs = list(dict.fromkeys([*(disc_subs or []), *niche_subs]))
-                    if niche_subs:
-                        src_cfg["subreddits"] = niche_subs
-                    elif disc_subs:
-                        src_cfg["subreddits"] = disc_subs
+                    src_cfg["subreddits"] = niche_subs
                 if name == "rss" and "feeds" not in src_cfg:
                     feeds = disc_feeds or [f"https://hnrss.org/{self._niche}"]
                     if feeds:
