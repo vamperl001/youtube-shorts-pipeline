@@ -59,7 +59,7 @@ thumbnail:
   text_position: "left_aligned"
 
 discovery:
-  reddit: ["selfhosted", "homelab", "DataHoarder", "docker"]
+  reddit: []
   rss:
     - "https://hnrss.org/frontpage"
     - "https://selfh.st/rss/"
