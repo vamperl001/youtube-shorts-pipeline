@@ -8,7 +8,7 @@ from verticals.draft import generate_draft
 
 class TestGenerateDraft:
     @patch("verticals.draft.research_topic")
-    @patch("verticals.draft._call_claude")
+    @patch("verticals.draft.call_llm")
     def test_basic_draft_generation(self, mock_claude, mock_research):
         mock_research.return_value = "Some research data about the topic."
         mock_claude.return_value = json.dumps({
@@ -30,7 +30,7 @@ class TestGenerateDraft:
         assert draft["research"] == "Some research data about the topic."
 
     @patch("verticals.draft.research_topic")
-    @patch("verticals.draft._call_claude")
+    @patch("verticals.draft.call_llm")
     def test_handles_code_block_wrapper(self, mock_claude, mock_research):
         mock_research.return_value = "research"
         mock_claude.return_value = '```json\n{"script":"test","broll_prompts":["p1","p2","p3"],"youtube_title":"T","youtube_description":"D","youtube_tags":"t","instagram_caption":"C","thumbnail_prompt":"P"}\n```'
@@ -39,7 +39,7 @@ class TestGenerateDraft:
         assert draft["script"] == "test"
 
     @patch("verticals.draft.research_topic")
-    @patch("verticals.draft._call_claude")
+    @patch("verticals.draft.call_llm")
     def test_sanitizes_non_string_fields(self, mock_claude, mock_research):
         mock_research.return_value = "research"
         mock_claude.return_value = json.dumps({
@@ -58,7 +58,7 @@ class TestGenerateDraft:
         assert len(draft["broll_prompts"]) == 3  # fallback
 
     @patch("verticals.draft.research_topic")
-    @patch("verticals.draft._call_claude")
+    @patch("verticals.draft.call_llm")
     def test_includes_channel_context(self, mock_claude, mock_research):
         mock_research.return_value = "research"
         mock_claude.return_value = json.dumps({
@@ -74,7 +74,7 @@ class TestGenerateDraft:
         assert "esports news channel" in call_args
 
     @patch("verticals.draft.research_topic")
-    @patch("verticals.draft._call_claude")
+    @patch("verticals.draft.call_llm")
     def test_truncates_broll_prompts(self, mock_claude, mock_research):
         mock_research.return_value = "research"
         mock_claude.return_value = json.dumps({

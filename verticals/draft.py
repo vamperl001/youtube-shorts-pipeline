@@ -14,9 +14,94 @@ from .niche import load_niche, get_script_context, get_visual_context, get_visua
 from .research import research_topic
 
 
-def _call_claude(prompt: str) -> str:
-    """Backwards-compatible Claude seam used by older tests and callers."""
-    return call_llm(prompt, provider="claude")
+def _strip_fences(raw: str) -> str:
+    raw = raw.strip()
+    if raw.startswith("```"):
+        parts = raw.split("```")
+        # parts[1] ist der Code-Block (evtl. mit "json"-Prefix)
+        raw = parts[1]
+        if raw.lstrip().startswith("json"):
+            raw = raw.lstrip()[4:]
+        raw = raw.strip()
+    return raw
+
+
+def _repair_truncated_json(raw: str) -> str:
+    """Best-effort-Reparatur fuer abgeschnittene LLM-JSON-Antworten.
+
+    Schließt offene Strings/Klammern, damit json.loads trotz
+    "Unterminated string" noch ein nutzbares Draft liefert.
+    Wirft JSONDecodeError wenn nichts zu retten ist.
+    """
+    s = raw.strip()
+    # Nur ab dem ersten "{" arbeiten (Vortext weg)
+    start = s.find("{")
+    if start > 0:
+        s = s[start:]
+    # Offene String-Literals schließen: ungerade Anzahl unescapter Quotes
+    in_str = False
+    esc = False
+    for ch in s:
+        if esc:
+            esc = False
+            continue
+        if ch == "\\":
+            if in_str:
+                esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+    if in_str:
+        s += '"'
+    # Offene Klammern schließen (String-Anteile ignorieren)
+    depth_brace = 0
+    depth_bracket = 0
+    in_str = False
+    esc = False
+    for ch in s:
+        if esc:
+            esc = False
+            continue
+        if ch == "\\" and in_str:
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == "{":
+            depth_brace += 1
+        elif ch == "}":
+            depth_brace -= 1
+        elif ch == "[":
+            depth_bracket += 1
+        elif ch == "]":
+            depth_bracket -= 1
+    # Fehlende schließende "]" vor "}" ergänzen (z. B. broll_prompts offen)
+    s += "]" * max(depth_bracket, 0)
+    s += "}" * max(depth_brace, 0)
+    return s
+
+
+def _parse_draft_json(raw: str) -> dict:
+    """Parse LLM-Antwort robust: Fences, Vortext, abgeschnittenes JSON."""
+    raw = _strip_fences(raw)
+
+    # Handle case where LLM wraps in additional text
+    start = raw.find("{")
+    end = raw.rfind("}") + 1
+    if start >= 0 and end > start:
+        candidate = raw[start:end]
+    else:
+        candidate = raw
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        pass
+    # Zweiter Versuch: repariertes (abgeschnittenes) JSON
+    repaired = _repair_truncated_json(candidate)
+    return json.loads(repaired)
 
 
 def generate_draft(
@@ -121,25 +206,28 @@ Output JSON exactly:
   "thumbnail_prompt": "..."
 }}"""
 
-    if provider in (None, "claude"):
-        raw = _call_claude(prompt)
-    else:
-        raw = call_llm(prompt, provider=provider, max_tokens=4096)
-
-    # Parse JSON from response
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
-
-    # Handle case where LLM wraps in additional text
-    start = raw.find("{")
-    end = raw.rfind("}") + 1
-    if start >= 0 and end > start:
-        raw = raw[start:end]
-
-    draft = json.loads(raw)
+    last_err: Exception | None = None
+    draft: dict | None = None
+    # Free-Modelle liefern oft leere/abgeschnittene Antworten.
+    # Darum: bis zu 3 frische LLM-Versuche + JSON-Reparatur,
+    # statt beim ersten kaputten JSON den ganzen Tageslauf zu killen.
+    for attempt in range(3):
+        if provider in (None, "claude"):
+            raw = call_llm(prompt, provider="claude")
+        else:
+            raw = call_llm(prompt, provider=provider, max_tokens=4096)
+        try:
+            draft = _parse_draft_json(raw)
+            break
+        except json.JSONDecodeError as e:
+            last_err = e
+            log(f"Draft-JSON kaputt (Versuch {attempt + 1}/3): {e} — neuer LLM-Versuch")
+            continue
+    if draft is None:
+        raise ValueError(
+            f"LLM lieferte 3x kein parsebares Draft-JSON (letzter Fehler: {last_err}). "
+            "Free-Modelle flaky — bezahltes Fallback (PAID_FALLBACK) pruefen."
+        )
 
     # Validate and sanitize LLM output fields
     expected_str_fields = [
@@ -150,6 +238,19 @@ Output JSON exactly:
     for field in expected_str_fields:
         if field in draft and not isinstance(draft[field], str):
             draft[field] = str(draft[field])
+    # Pflichtfelder aus repariertem/trunkiertem JSON auffuellen statt crashen
+    if not draft.get("script"):
+        draft["script"] = news
+    for field, fallback in [
+        ("youtube_title", news[:100]),
+        ("youtube_description", draft.get("script", news)[:500]),
+        ("youtube_tags", "selfhosting,homelab,server"),
+        ("instagram_caption", draft.get("script", news)[:200]),
+        ("tiktok_caption", draft.get("script", news)[:200]),
+        ("thumbnail_prompt", news[:200]),
+    ]:
+        if not draft.get(field):
+            draft[field] = fallback
     if "broll_prompts" in draft:
         if not isinstance(draft["broll_prompts"], list):
             draft["broll_prompts"] = ["Cinematic landscape"] * 3

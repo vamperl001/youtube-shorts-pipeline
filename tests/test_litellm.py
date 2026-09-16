@@ -122,3 +122,40 @@ class TestRequirements:
     def test_litellm_in_requirements(self):
         reqs = (Path(__file__).resolve().parents[1] / "requirements.txt").read_text()
         assert "litellm" in reqs
+
+
+class TestGeminiFailover:
+    """Gemini failures fail over via litellm's native fallbacks param."""
+
+    def test_gemini_passes_fallbacks_to_litellm(self):
+        fake = types.ModuleType("litellm")
+        mock_msg = MagicMock(content="fallback ok")
+        mock_resp = MagicMock(choices=[MagicMock(message=mock_msg)])
+        fake.completion = MagicMock(return_value=mock_resp)
+        sys.modules["litellm"] = fake
+
+        try:
+            with patch("verticals.llm.get_gemini_key", return_value="gk"):
+                with patch(
+                    "verticals.llm._openrouter_fallbacks",
+                    return_value=["openrouter/qwen/qwen3.5-9b", "openrouter/free"],
+                ):
+                    from verticals.llm import call_llm
+
+                    result = call_llm("hi", provider="gemini")
+        finally:
+            del sys.modules["litellm"]
+
+        assert result == "fallback ok"
+        kwargs = fake.completion.call_args.kwargs
+        assert kwargs["model"].startswith("gemini/")
+        assert kwargs["api_key"] == "gk"
+        assert kwargs["fallbacks"] == ["openrouter/qwen/qwen3.5-9b", "openrouter/free"]
+
+    def test_gemini_raises_without_key(self):
+        with patch("verticals.llm.get_gemini_key", return_value=""):
+            with patch("time.sleep"):  # skip backoff delays
+                from verticals.llm import call_llm
+
+                with pytest.raises(RuntimeError, match="GEMINI_API_KEY not set"):
+                    call_llm("hi", provider="gemini")

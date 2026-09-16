@@ -1,21 +1,24 @@
-"""Multi-provider LLM abstraction.
+"""LLM access via LiteLLM (+ Claude CLI fallback).
 
-Supports: claude (Anthropic), gemini (Google), openai (OpenAI), ollama (local),
-litellm (100+ providers via unified SDK).
+Every provider goes through litellm.completion; provider-specific code is
+reduced to model names, keys, and the Gemini failover chain.
+Supported: claude (Anthropic), gemini (Google), openai (OpenAI), ollama
+(local), minimax, litellm (explicit LITELLM_MODEL), claude_cli (Max sub).
 Provider selection: --provider flag or LLM_PROVIDER env var or config.json.
 """
 
 import json
 import os
+import pathlib
 
 from .config import (
-    get_anthropic_client,
     get_anthropic_key,
-    get_claude_backend,
     get_gemini_key,
     get_gemini_llm_model,
     get_minimax_key,
     call_claude_cli,
+    has_claude_cli,
+    load_config,
 )
 from .log import log
 from .retry import with_retry
@@ -33,7 +36,6 @@ def get_provider(name: str | None = None) -> str:
     if from_env:
         return from_env
 
-    from .config import load_config
     cfg = load_config()
     from_cfg = cfg.get("LLM_PROVIDER", "").lower()
     if from_cfg:
@@ -52,7 +54,6 @@ def get_provider(name: str | None = None) -> str:
         return "ollama"
 
     # Last resort: Claude CLI
-    from .config import has_claude_cli
     if has_claude_cli():
         return "claude_cli"
 
@@ -74,214 +75,66 @@ def _ollama_available() -> bool:
         return False
 
 
-@with_retry(max_retries=2, base_delay=3.0)
-def call_llm(prompt: str, provider: str | None = None, max_tokens: int = 1500) -> str:
-    """Call any supported LLM provider with the given prompt.
+def _export_config_keys():
+    """Mirror config.json keys into env so litellm (and fallbacks) find them."""
+    cfg = load_config()
+    for key in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"):
+        if not os.environ.get(key) and cfg.get(key):
+            os.environ[key] = cfg[key]
 
-    Args:
-        prompt: The full prompt text.
-        provider: Provider name (claude, gemini, openai, ollama, claude_cli).
-        max_tokens: Maximum response tokens.
 
-    Returns:
-        The LLM response text.
-    """
-    provider = get_provider(provider)
-    log(f"Calling LLM via {provider}...")
-
-    if provider == "claude":
-        return _call_claude(prompt, max_tokens)
-    elif provider == "claude_cli":
-        return call_claude_cli(prompt, max_tokens=max_tokens)
-    elif provider == "gemini":
+def _openrouter_key() -> str:
+    """Resolve OPENROUTER_API_KEY (env or hermes key files)."""
+    if os.environ.get("OPENROUTER_API_KEY", "").startswith("sk-or-v1-"):
+        return os.environ["OPENROUTER_API_KEY"]
+    # Zentraler Key (exchange/env/openrouter.env raw key, Fallback hermes/data/.env mit Prefix)
+    for p in ["/srv/docker/hermes/exchange/env/openrouter.env", "/srv/docker/hermes/data/.env"]:
         try:
-            return _call_gemini(prompt, max_tokens)
-        except (RuntimeError, Exception) as e:
-            msg = str(e)
-            if any(x in msg for x in ["503", "429", "404", "timeout", "Timeout", "timed out", "ReadTimeout"]):
-                # Zentraler Key (exchange/env/openrouter.env raw key, Fallback hermes/data/.env mit Prefix)
-                for p in ["/srv/docker/hermes/exchange/env/openrouter.env", "/srv/docker/hermes/data/.env"]:
-                    try:
-                        txt = pathlib.Path(p).read_text().strip()
-                        if not txt:
-                            continue
-                        if "OPENROUTER_API_KEY=" in txt:
-                            os.environ["OPENROUTER_API_KEY"] = txt.split("OPENROUTER_API_KEY=")[1].split()[0].strip().strip('"').strip("'")
-                        elif txt.startswith("sk-or-v1-"):
-                            os.environ["OPENROUTER_API_KEY"] = txt.split()[0].strip()
-                        else:
-                            continue
-                        if os.environ["OPENROUTER_API_KEY"].startswith("sk-or-v1-"):
-                            break
-                    except Exception:
-                        pass
-                # Fallback-Kette ohne Hardcode: erst generisch, dann env FALLBACK_MODELS, zuletzt bezahlt
-                import json as _json
-                fb = os.environ.get("FALLBACK_MODELS", "")
-                if fb:
-                    try:
-                        models = _json.loads(fb) if fb.strip().startswith("[") else [x.strip() for x in fb.split(",") if x.strip()]
-                    except Exception:
-                        models = ["openrouter/free"]
-                else:
-                    # dynamisch freie Modelle holen, sonst Default-Kette
-                    try:
-                        import requests as _rq
-                        r = _rq.get("https://openrouter.ai/api/v1/models", timeout=5)
-                        models = [m["id"] for m in r.json().get("data", []) if ":free" in m["id"]][:3]
-                        models = ["openrouter/free"] + [f"openrouter/{m}" for m in models]
-                    except Exception:
-                        models = ["openrouter/free"]
-                # immer bezahltes Fallback anhängen (aus env oder Default)
-                paid = os.environ.get("PAID_FALLBACK", "openrouter/google/gemini-2.0-flash-001")
-                if paid not in models:
-                    models.append(paid)
-                for m in models:
-                    os.environ["LITELLM_MODEL"] = m
-                    try:
-                        return _call_litellm(prompt, max_tokens)
-                    except Exception as e2:
-                        msg = str(e2)
-                        if (("No endpoints" in msg or "unavailable for free" in msg or "rate-limited" in msg.lower() or "RateLimit" in msg) and m != models[-1]):
-                            continue
-                        raise
-            raise
-    elif provider == "minimax":
-        return _call_minimax(prompt, max_tokens)
-    elif provider == "openai":
-        return _call_openai(prompt, max_tokens)
-    elif provider == "ollama":
-        return _call_ollama(prompt)
-    elif provider == "litellm":
-        return _call_litellm(prompt, max_tokens)
+            txt = pathlib.Path(p).read_text().strip()
+            if not txt:
+                continue
+            if "OPENROUTER_API_KEY=" in txt:
+                cand = txt.split("OPENROUTER_API_KEY=")[1].split()[0].strip().strip('"').strip("'")
+            elif txt.startswith("sk-or-v1-"):
+                cand = txt.split()[0].strip()
+            else:
+                continue
+            if cand.startswith("sk-or-v1-"):
+                os.environ["OPENROUTER_API_KEY"] = cand
+                return cand
+        except Exception:
+            pass
+    return os.environ.get("OPENROUTER_API_KEY", "")
+
+
+def _openrouter_fallbacks() -> list:
+    """Failover chain: BEZAHLT zuerst, Free-Modelle nur als letzte Reserve.
+    (User-Entscheidung 15.09.: lieber ~2ct/Video als trunkierte Drafts.)"""
+    _openrouter_key()
+    paid = os.environ.get("PAID_FALLBACK", "openrouter/qwen/qwen3.5-9b")
+    fb = os.environ.get("FALLBACK_MODELS", "")
+    if fb:
+        try:
+            free_models = json.loads(fb) if fb.strip().startswith("[") else [x.strip() for x in fb.split(",") if x.strip()]
+        except Exception:
+            free_models = ["openrouter/free"]
     else:
-        raise ValueError(f"Unknown LLM provider: {provider}")
+        # dynamisch freie Modelle holen, sonst Default-Kette
+        try:
+            import requests
+            r = requests.get("https://openrouter.ai/api/v1/models", timeout=5)
+            free_models = [m["id"] for m in r.json().get("data", []) if ":free" in m["id"]][:3]
+            free_models = ["openrouter/free"] + [f"openrouter/{m}" for m in free_models]
+        except Exception:
+            free_models = ["openrouter/free"]
+    # Paid an erste Stelle (dedupliziert), Free danach als Notnagel
+    return [paid] + [m for m in free_models if m != paid]
 
 
-def _call_claude(prompt: str, max_tokens: int) -> str:
-    """Call Claude via Anthropic API."""
-    backend = get_claude_backend()
-    if backend == "cli":
-        return call_claude_cli(prompt, max_tokens=max_tokens)
-
-    client = get_anthropic_client()
-    msg = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=int(os.environ.get("LITELLM_MAX_TOKENS", str(max_tokens))),
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return msg.content[0].text.strip()
-
-
-def _call_minimax(prompt: str, max_tokens: int) -> str:
-    """Call MiniMax via OpenAI-compatible API."""
+def _ollama_model() -> str:
+    """Pick the best local Ollama model. Tries models in preference order."""
     import requests
 
-    api_key = get_minimax_key()
-    if not api_key:
-        raise RuntimeError("MINIMAX_API_KEY not set")
-
-    base_url = os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
-    r = requests.post(
-        f"{base_url}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": "MiniMax-M2.7",
-            "max_tokens": max_tokens,
-            "temperature": 1.0,
-            "messages": [{"role": "user", "content": prompt}],
-        },
-        timeout=60,
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"MiniMax API {r.status_code}: {r.text[:300]}")
-
-    data = r.json()
-    return data["choices"][0]["message"]["content"].strip()
-
-
-def _call_gemini(prompt: str, max_tokens: int) -> str:
-    """Call Gemini via Google AI API."""
-    import requests
-
-    api_key = get_gemini_key()
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY not set")
-
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta"
-        "/models/" + get_gemini_llm_model() + ":generateContent"
-    )
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "maxOutputTokens": int(os.environ.get("GEMINI_MAX_TOKENS", str(max_tokens))),
-            "temperature": 0.7,
-        },
-    }
-    r = requests.post(
-        url, json=body, timeout=60,
-        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-    )
-    if r.status_code != 200:
-        hint = ""
-        if r.status_code == 403:
-            hint = (
-                " — check that GEMINI_API_KEY is set in this environment and is "
-                "an AI Studio key (https://aistudio.google.com/apikey), not a "
-                "Vertex AI / service-account credential"
-            )
-        raise RuntimeError(f"Gemini API {r.status_code}: {r.text[:300]}{hint}")
-
-    data = r.json()
-    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-    text = " ".join(p.get("text", "") for p in parts).strip()
-    if not text:
-        raise RuntimeError("Empty response from Gemini")
-    return text
-
-
-def _call_openai(prompt: str, max_tokens: int) -> str:
-    """Call OpenAI GPT via API."""
-    import requests
-
-    from .config import load_config
-    api_key = os.environ.get("OPENAI_API_KEY") or load_config().get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set")
-
-    r = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": "gpt-4o-mini",
-            "max_tokens": max_tokens,
-            "temperature": 0.7,
-            "messages": [{"role": "user", "content": prompt}],
-        },
-        timeout=60,
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"OpenAI API {r.status_code}: {r.text[:300]}")
-
-    data = r.json()
-    return data["choices"][0]["message"]["content"].strip()
-
-
-def _call_ollama(prompt: str) -> str:
-    """Call Ollama locally (no API key needed).
-
-    Tries models in preference order: llama3.1:8b, mistral, gemma2.
-    """
-    import requests
-
-    # Find available models
     try:
         tags = requests.get("http://localhost:11434/api/tags", timeout=5).json()
         available = [m["name"] for m in tags.get("models", [])]
@@ -291,53 +144,106 @@ def _call_ollama(prompt: str) -> str:
     if not available:
         raise RuntimeError("No Ollama models found. Pull one: ollama pull llama3.1:8b")
 
-    # Pick best available model
     preferred = ["llama3.1:8b", "llama3:8b", "mistral", "gemma2", "qwen2.5:7b"]
-    model = None
     for pref in preferred:
         for avail in available:
             if pref in avail:
-                model = avail
-                break
-        if model:
-            break
-    if not model:
-        model = available[0]
-
-    log(f"Using Ollama model: {model}")
-
-    r = requests.post(
-        "http://localhost:11434/api/generate",
-        json={"model": model, "prompt": prompt, "stream": False},
-        timeout=120,
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"Ollama {r.status_code}: {r.text[:300]}")
-
-    return r.json().get("response", "").strip()
+                log(f"Using Ollama model: {avail}")
+                return f"ollama/{avail}"
+    log(f"Using Ollama model: {available[0]}")
+    return f"ollama/{available[0]}"
 
 
-def _call_litellm(prompt: str, max_tokens: int) -> str:
+@with_retry(max_retries=2, base_delay=3.0)
+def call_llm(prompt: str, provider: str | None = None, max_tokens: int = 1500) -> str:
+    """Call any supported LLM provider with the given prompt.
+
+    Args:
+        prompt: The full prompt text.
+        provider: Provider name (claude, gemini, openai, ollama, minimax, litellm, claude_cli).
+        max_tokens: Maximum response tokens.
+
+    Returns:
+        The LLM response text.
+    """
+    provider = get_provider(provider)
+    log(f"Calling LLM via {provider}...")
+    _export_config_keys()
+
+    if provider == "claude_cli":
+        return call_claude_cli(prompt, max_tokens=max_tokens)
+    if provider == "claude":
+        if get_anthropic_key():
+            return _call_litellm(prompt, max_tokens, model="anthropic/claude-sonnet-4-6",
+                                 api_key=get_anthropic_key())
+        if has_claude_cli():
+            return call_claude_cli(prompt, max_tokens=max_tokens)
+        raise RuntimeError(
+            "No Claude access found. Set ANTHROPIC_API_KEY or install Claude Code."
+        )
+    if provider == "gemini":
+        api_key = get_gemini_key()
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY not set")
+        max_tokens = int(os.environ.get("GEMINI_MAX_TOKENS", max_tokens))
+        return _call_litellm(prompt, max_tokens, model=f"gemini/{get_gemini_llm_model()}",
+                             api_key=api_key, fallbacks=_openrouter_fallbacks())
+    if provider == "minimax":
+        api_key = get_minimax_key()
+        if not api_key:
+            raise RuntimeError("MINIMAX_API_KEY not set")
+        return _call_litellm(prompt, max_tokens, model="openai/MiniMax-M2.7",
+                             api_key=api_key,
+                             api_base=os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.io/v1"),
+                             temperature=1.0)
+    if provider == "openai":
+        api_key = os.environ.get("OPENAI_API_KEY") or load_config().get("OPENAI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY not set")
+        return _call_litellm(prompt, max_tokens, model="openai/gpt-4o-mini", api_key=api_key)
+    if provider == "ollama":
+        return _call_litellm(prompt, max_tokens, model=_ollama_model(), timeout=120)
+    if provider == "litellm":
+        return _call_litellm(prompt, max_tokens)
+    raise ValueError(f"Unknown LLM provider: {provider}")
+
+
+def _call_litellm(prompt: str, max_tokens: int, model: str | None = None,
+                  fallbacks: list | None = None, api_key: str | None = None,
+                  api_base: str | None = None, temperature: float = 0.7,
+                  timeout: int | None = None) -> str:
     """Call any LLM provider via the litellm SDK.
 
-    Set LITELLM_MODEL to specify the model (e.g. anthropic/claude-sonnet-4-20250514,
+    model defaults to LITELLM_MODEL (e.g. anthropic/claude-sonnet-4-20250514,
     azure/gpt-4o, bedrock/anthropic.claude-3-haiku, openai/gpt-4o).
-    LiteLLM reads provider API keys from env vars automatically.
+    LiteLLM reads provider API keys from env vars automatically; api_key /
+    api_base override per call. fallbacks fail over to the next model on error.
 
     See https://docs.litellm.ai/docs/providers for all supported models.
     """
     import litellm
 
-    model = os.environ.get("LITELLM_MODEL", "openai/gpt-4o")
+    model = model or os.environ.get("LITELLM_MODEL", "openai/gpt-4o")
     log(f"Using LiteLLM model: {model}")
+    max_tokens = int(os.environ.get("LITELLM_MAX_TOKENS", max_tokens))
 
-    response = litellm.completion(
+    kwargs: dict = dict(
         model=model,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=int(os.environ.get("LITELLM_MAX_TOKENS", str(max_tokens))),
-        temperature=0.7,
+        max_tokens=max_tokens,
+        temperature=temperature,
         drop_params=True,
     )
+    if fallbacks:
+        kwargs["fallbacks"] = fallbacks
+    if api_key:
+        kwargs["api_key"] = api_key
+    if api_base:
+        kwargs["api_base"] = api_base
+    if timeout:
+        kwargs["timeout"] = timeout
+
+    response = litellm.completion(**kwargs)
 
     content = response.choices[0].message.content
     if not content:

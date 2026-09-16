@@ -2,7 +2,8 @@
 
 import concurrent.futures
 
-from ..config import load_config, get_anthropic_client, get_claude_backend, call_claude_cli, NICHE_TO_SUBREDDITS
+from ..config import load_config, NICHE_TO_SUBREDDITS
+from ..llm import call_llm
 from ..log import log
 from ..niche import load_niche, get_discovery_config
 from .base import TopicCandidate
@@ -128,14 +129,4 @@ Consider: visual potential, broad appeal, timeliness, controversy/surprise facto
 
 Reply with ONLY the topic title text, nothing else."""
 
-        backend = get_claude_backend()
-        if backend == "api":
-            client = get_anthropic_client()
-            msg = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=200,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return msg.content[0].text.strip()
-        else:
-            return call_claude_cli(prompt, max_tokens=200)
+        return call_llm(prompt, provider="claude", max_tokens=200)

@@ -1,17 +1,32 @@
 """Tests for MiniMax LLM and TTS provider integration."""
 
 import os
+import sys
+import types
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from verticals.llm import _call_minimax, get_provider
+from verticals.llm import call_llm, get_provider
 from verticals.tts import (
     MINIMAX_TTS_VOICES,
     _call_minimax_tts,
     _generate_minimax,
     get_tts_provider,
 )
+
+
+def _fake_litellm(content="Hello from MiniMax"):
+    """Fake litellm module capturing completion kwargs."""
+    fake = types.ModuleType("litellm")
+    mock_msg = MagicMock()
+    mock_msg.content = content
+    mock_choice = MagicMock()
+    mock_choice.message = mock_msg
+    mock_resp = MagicMock()
+    mock_resp.choices = [mock_choice]
+    fake.completion = MagicMock(return_value=mock_resp)
+    return fake
 
 
 class TestMinimaxLLMProvider:
@@ -33,54 +48,51 @@ class TestMinimaxLLMProvider:
 
     def test_call_minimax_success(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "choices": [{"message": {"content": "Hello from MiniMax"}}]
-        }
-
-        with patch("verticals.llm.get_minimax_key", return_value="test-key"):
-            with patch("requests.post", return_value=mock_response) as mock_post:
-                result = _call_minimax("Say hello", 100)
+        monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+        fake = _fake_litellm()
+        sys.modules["litellm"] = fake
+        try:
+            with patch("verticals.llm.get_minimax_key", return_value="test-key"):
+                result = call_llm("Say hello", provider="minimax")
+        finally:
+            del sys.modules["litellm"]
 
         assert result == "Hello from MiniMax"
-        call_kwargs = mock_post.call_args
-        payload = call_kwargs[1]["json"]
-        assert payload["model"] == "MiniMax-M2.7"
-        assert payload["temperature"] == 1.0
-        assert "api.minimax.io" in call_kwargs[0][0]
+        kwargs = fake.completion.call_args.kwargs
+        assert kwargs["model"] == "openai/MiniMax-M2.7"
+        assert kwargs["temperature"] == 1.0
+        assert kwargs["api_key"] == "test-key"
+        assert kwargs["api_base"].startswith("https://api.minimax.io/v1")
 
-    def test_call_minimax_uses_correct_base_url(self, monkeypatch):
-        monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+    def test_call_minimax_uses_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_BASE_URL", "https://custom.minimax.example/v1")
+        fake = _fake_litellm("ok")
+        sys.modules["litellm"] = fake
+        try:
+            with patch("verticals.llm.get_minimax_key", return_value="key"):
+                call_llm("test", provider="minimax")
+        finally:
+            del sys.modules["litellm"]
 
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "choices": [{"message": {"content": "ok"}}]
-        }
+        assert fake.completion.call_args.kwargs["api_base"] == "https://custom.minimax.example/v1"
 
-        with patch("verticals.llm.get_minimax_key", return_value="key"):
-            with patch("requests.post", return_value=mock_response) as mock_post:
-                _call_minimax("test", 10)
-
-        url = mock_post.call_args[0][0]
-        assert url.startswith("https://api.minimax.io/v1")
-
-    def test_call_minimax_raises_on_error(self, monkeypatch):
-        mock_response = MagicMock()
-        mock_response.status_code = 401
-        mock_response.text = "Unauthorized"
-
-        with patch("verticals.llm.get_minimax_key", return_value="bad-key"):
-            with patch("requests.post", return_value=mock_response):
-                with pytest.raises(RuntimeError, match="MiniMax API 401"):
-                    _call_minimax("test", 10)
+    def test_call_minimax_propagates_error(self):
+        fake = types.ModuleType("litellm")
+        fake.completion = MagicMock(side_effect=RuntimeError("upstream 429"))
+        sys.modules["litellm"] = fake
+        try:
+            with patch("verticals.llm.get_minimax_key", return_value="key"):
+                with patch("time.sleep"):  # skip backoff delays
+                    with pytest.raises(RuntimeError, match="upstream 429"):
+                        call_llm("test", provider="minimax")
+        finally:
+            del sys.modules["litellm"]
 
     def test_call_minimax_raises_when_no_api_key(self):
         with patch("verticals.llm.get_minimax_key", return_value=""):
-            with pytest.raises(RuntimeError, match="MINIMAX_API_KEY not set"):
-                _call_minimax("test", 10)
+            with patch("time.sleep"):  # skip backoff delays
+                with pytest.raises(RuntimeError, match="MINIMAX_API_KEY not set"):
+                    call_llm("test", provider="minimax")
 
 
 class TestMinimaxTTSProvider:

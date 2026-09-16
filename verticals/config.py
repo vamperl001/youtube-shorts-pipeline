@@ -119,34 +119,12 @@ PLATFORM_CONFIGS: dict[str, dict] = {
 
 
 # ─────────────────────────────────────────────────────
-# Claude Max OAuth support
+# Claude CLI availability
 # ─────────────────────────────────────────────────────
-CLAUDE_CREDENTIALS = Path.home() / ".claude" / ".credentials.json"
-
-
 def has_claude_cli() -> bool:
     """Check if the `claude` CLI is available (Claude Code / Claude Max)."""
     import shutil
     return shutil.which("claude") is not None
-
-
-def _has_claude_max_credentials() -> bool:
-    """Check if Claude Code OAuth credentials are available.
-
-    Two sources count:
-    - CLAUDE_CODE_OAUTH_TOKEN env var (created via `claude setup-token`,
-      picked up by the claude CLI automatically — useful for CI/headless)
-    - ~/.claude/.credentials.json (created via `claude login` / Claude Max)
-    """
-    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-        return True
-    if not CLAUDE_CREDENTIALS.exists():
-        return False
-    try:
-        creds = json.loads(CLAUDE_CREDENTIALS.read_text())
-        return bool(creds.get("claudeAiOauth", {}).get("accessToken"))
-    except Exception:
-        return False
 
 
 def call_claude_cli(prompt: str, model: str = "claude-sonnet-4-6", max_tokens: int = 1500) -> str:
@@ -177,39 +155,6 @@ def call_claude_cli(prompt: str, model: str = "claude-sonnet-4-6", max_tokens: i
     if output.endswith("Error: Reached max turns (3)"):
         output = output[: -len("Error: Reached max turns (3)")].strip()
     return output
-
-
-def get_anthropic_client():
-    """Create an Anthropic client if an API key is available.
-
-    Returns the client, or None if no API key (caller should use call_claude_cli).
-    """
-    import anthropic
-
-    api_key = get_anthropic_key()
-    if api_key:
-        return anthropic.Anthropic(api_key=api_key)
-
-    return None
-
-
-def get_claude_backend() -> str:
-    """Determine which Claude backend to use.
-
-    Returns: "api" if ANTHROPIC_API_KEY is set, "cli" if claude CLI is available.
-    Raises RuntimeError if neither is available.
-    """
-    if get_anthropic_key():
-        return "api"
-    if has_claude_cli() and _has_claude_max_credentials():
-        return "cli"
-    raise RuntimeError(
-        "No Claude access found. Either:\n"
-        "  1. Set ANTHROPIC_API_KEY in env or ~/.verticals/config.json\n"
-        "  2. Log in to Claude Code (claude login) with a Claude Max subscription\n"
-        "  3. Set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) with the\n"
-        "     claude CLI installed"
-    )
 
 
 def get_elevenlabs_key() -> str:
