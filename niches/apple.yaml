@@ -1,0 +1,27 @@
+name: apple
+display_name: "Apple & Mac News"
+description: "Apple ecosystem, iPhone, Mac, iOS, macOS for Shorts."
+script:
+  tone: "enthusiast, insider, Apple-fan but critical"
+  pacing: "punchy, one reveal per sentence"
+  hooks:
+    - pattern: "breaking"
+      template: "Just dropped: {topic} — and your Apple setup needs it tonight."
+    - pattern: "upgrade"
+      template: "This {topic} changes your iPhone/Mac. Fix these three things."
+  cta_variants:
+    - "Follow for daily Apple breakdowns."
+    - "Save this before your next upgrade."
+  word_count: "140 to 165"
+visuals:
+  style: "clean Apple store lighting, device close-ups, iOS screens"
+  prompt_suffix: "photorealistic, clean lighting, high detail, 4K"
+voice:
+  pace: "zügig, ~155 wpm"
+  suggested_voices:
+    edge_tts:
+      en: "en-US-GuyNeural"
+discovery:
+  rss:
+    - "https://feeds.macrumors.com/MacRumors-All"
+  reddit: []

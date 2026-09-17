@@ -119,6 +119,11 @@ class TopicEngine:
             from ..log import log as _log
             _log(f"Blacklist: {before - len(unique)} Show/Ask HN/mysetup.ai Topics gefiltert")
 
+        # ponytail: MacRumors boost - user will Apple höher ranken als selfhosting Filter (4 Themen reichen als eigener Channel)
+        for t in unique:
+            if "macrumors" in t.source.lower():
+                t.trending_score += 0.4
+
         # Sort by trending score (highest first)
         unique.sort(key=lambda t: t.trending_score, reverse=True)
         return unique[:limit]
