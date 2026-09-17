@@ -186,8 +186,24 @@ def call_llm(prompt: str, provider: str | None = None, max_tokens: int = 1500) -
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY not set")
         max_tokens = int(os.environ.get("GEMINI_MAX_TOKENS", max_tokens))
-        return _call_litellm(prompt, max_tokens, model=f"gemini/{get_gemini_llm_model()}",
-                             api_key=api_key, fallbacks=_openrouter_fallbacks())
+        # ponytail: manual fallback loop statt litellm-fallbacks (die reuse'n api_key falsch -> 401)
+        gemini_model = f"gemini/{get_gemini_llm_model()}"
+        try:
+            return _call_litellm(prompt, max_tokens, model=gemini_model, api_key=api_key)
+        except Exception as e:
+            log(f"Gemini {gemini_model} failed: {e} -> trying OpenRouter fallbacks")
+            # OpenRouter fallback chain manuell mit korrektem Key pro Modell
+            o_key = _openrouter_key()
+            if not o_key:
+                raise
+            for fb in _openrouter_fallbacks():
+                try:
+                    log(f"Trying fallback {fb}...")
+                    return _call_litellm(prompt, max_tokens, model=fb, api_key=o_key)
+                except Exception as fe:
+                    log(f"Fallback {fb} failed: {fe}")
+                    continue
+            raise
     if provider == "minimax":
         api_key = get_minimax_key()
         if not api_key:

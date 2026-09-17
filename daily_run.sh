@@ -19,15 +19,19 @@ else
     exit 1
 fi
 
-# Dynamisch bestes Gemini Modell (statt hardcodiert)
-if [ -z "${GEMINI_MODEL:-}" ]; then
-  GEMINI_MODEL=$(curl -s -H "x-goog-api-key: $GEMINI_API_KEY" "https://generativelanguage.googleapis.com/v1beta/models" | python3 -c "import json,sys; d=json.load(sys.stdin); ms=[m['name'].split('/')[-1] for m in d.get('models',[]) if 'generateContent' in str(m.get('supportedGenerationMethods',[]))]; print(sorted(ms)[-1] if ms else 'gemini-2.0-flash')")
-  export GEMINI_MODEL
+# Fixed: stabiles Gemini Modell (statt sorted()[−1]=nano-banana 429). ponytail: pin, dynamisch nur wenn nötig
+if [ -z "${GEMINI_LLM_MODEL:-}" ]; then
+  GEMINI_LLM_MODEL="gemini-flash-latest"
+  export GEMINI_LLM_MODEL
+  export GEMINI_MODEL="$GEMINI_LLM_MODEL"
 fi
 export GEMINI_MAX_TOKENS=8192
+# Fallback-Kette (llm.py): Gemini direkt -> PAID zuerst -> Free-Reserve.
+# Paid-Default verifiziert (15.09., antwortet, ~0.005ct/Draft); altes
+# google/gemini-2.0-flash-001 ist bei OpenRouter retired (404).
+export PAID_FALLBACK="${PAID_FALLBACK:-openrouter/qwen/qwen3.5-9b}"
 # Kein Hardcode - llm.py holt freie Modelle dynamisch via /api/v1/models, Fallback via env FALLBACK_MODELS / PAID_FALLBACK
-# Optional setzen: export FALLBACK_MODELS='["openrouter/free"]' oder PAID_FALLBACK="openrouter/google/gemini-2.0-flash-001"
-# Default: openrouter/free + dynamische :free Liste + bezahlt gemini-2.0-flash-001 (~2ct)
+# Optional setzen: export FALLBACK_MODELS='["openrouter/free"]'
 unset LITELLM_MODEL 2>/dev/null || true
 # Zentraler Key (raw file, Fallback data/.env)
 if [ -f /srv/docker/hermes/exchange/env/openrouter.env ]; then
