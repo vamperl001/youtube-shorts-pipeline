@@ -50,7 +50,7 @@ BEFORE=$(ls -t "$MEDIA_DIR"/verticals_*_en.mp4 2>/dev/null | head -1)
 BEFORE_T=0; [ -n "$BEFORE" ] && BEFORE_T=$(stat -c %Y "$BEFORE")
 
 set +e
-python3 -m verticals daily --lang en --niche selfhosting 2>&1 | tee -a "$LOG"
+python3 -m verticals daily --lang en --niche apple  # ponytail: nur apple (höhere Audience) statt selfhosting-Mix 2>&1 | tee -a "$LOG"
 RC=${PIPESTATUS[0]}
 set -e
 
