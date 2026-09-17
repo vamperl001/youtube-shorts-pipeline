@@ -24,4 +24,7 @@ voice:
 discovery:
   rss:
     - "https://feeds.macrumors.com/MacRumors-All"
+    - "https://9to5mac.com/feed/"
+    - "https://appleinsider.com/rss/news/"
+    - "https://www.cultofmac.com/feed/"  # ponytail: 4 Apple feeds = 8 Topics (2/Fee), iMore/Apple Newsroom optional
   reddit: []
