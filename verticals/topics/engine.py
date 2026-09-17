@@ -111,6 +111,14 @@ class TopicEngine:
                 seen.add(key)
                 unique.append(t)
 
+        # ponytail: blacklist Werbe-/Meta-Topics (Show HN / Ask HN / mysetup.ai) - user: heutiges Topic war HN-Werbung
+        _black = ("show hn:", "ask hn:", "launch hn:", "mysetup.ai")
+        before = len(unique)
+        unique = [t for t in unique if not any(b in t.title.lower() or b in (t.url or "").lower() for b in _black)]
+        if len(unique) < before:
+            from ..log import log as _log
+            _log(f"Blacklist: {before - len(unique)} Show/Ask HN/mysetup.ai Topics gefiltert")
+
         # Sort by trending score (highest first)
         unique.sort(key=lambda t: t.trending_score, reverse=True)
         return unique[:limit]
