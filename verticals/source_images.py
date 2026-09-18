@@ -95,25 +95,47 @@ def _container_screenshot(url: str, out_path: Path, width: int, height: int) -> 
 
 
 def _og_image(url: str, out_path: Path) -> bool:
-    """Versuche og:image / twitter:image direkt zu laden (kein Screenshot nötig)."""
+    """og:image / twitter:image / Inline-img aus Artikel-HTML."""
+    q = chr(34) + chr(39)
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "verticals/1.0"})
-        html = urllib.request.urlopen(req, timeout=10).read().decode(errors="ignore")
-        m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
-        if not m:
-            m = re.search(r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
-        if m:
-            img_url = m.group(1).strip()
+        html = urllib.request.urlopen(req, timeout=10).read().decode(errors=
+            "ignore")
+        cands = []
+        base = r"<meta[^>]+property=[" + q + "]og:image[" + q + "]"
+        base += r"[^>]+content=[" + q + "]([^" + q + "]+)[" + q + "]"
+        tw = base.replace("property", "name").replace("og:image",
+            "twitter:image")
+        for pat in (base, tw):
+            m = re.search(pat, html, re.I)
+            if m:
+                cands.append(m.group(1).strip())
+        im = r"<img[^>]+src=[" + q + "]([^" + q + "]+)[" + q + "]"
+        for m in re.finditer(im, html, re.I):
+            src = m.group(1).strip()
+            if src.startswith("data:"):
+                continue
+            if src.endswith(".svg"):
+                continue
+            if re.search(
+                r"1x1|pixel|spacer|transparent|icon|logo|avatar|badge|spinner",
+                src, re.I):
+                continue
+            if src not in cands:
+                cands.append(src)
+        from urllib.parse import urljoin
+        for img_url in cands[:6]:
             if img_url.startswith("//"):
                 img_url = "https:" + img_url
             elif img_url.startswith("/"):
-                from urllib.parse import urljoin
                 img_url = urljoin(url, img_url)
-            return download_image(img_url, out_path, timeout=15)
+            if not img_url.startswith("http"):
+                continue
+            if download_image(img_url, out_path, timeout=15):
+                return True
     except Exception:
         pass
     return False
-
 
 def screenshot_website(url: str, out_path: Path, width: int = 1200, height: int = 2000) -> bool:
     """og:image zuerst, dann echter Screenshot, Fallback thum.io."""
@@ -212,6 +234,9 @@ def fetch_presskit_images(domain: str, keywords: list[str]) -> list[str]:
     """Fetch product images from known PressKit CDN URLs."""
     presskits = {
         "apple.com": [
+            # iPhone (Store-CDN, stabile IDs)
+            "https://store.storeimages.cdn-apple.com/4982/as-images.apple.com/is/iphone-18-pro-finish-select-202509?wid=1200&hei=900",
+            "https://store.storeimages.cdn-apple.com/4982/as-images.apple.com/is/iphone-18-finish-select-202509?wid=1200&hei=900",
             # Mac Mini (current gen)
             "https://store.storeimages.cdn-apple.com/4982/as-images.apple.com/is/mac-mini-hero-select-202411?wid=1200&hei=900",
             "https://www.apple.com/v/mac-mini/a/images/overview/hero/hero__bqxj2v61czqe_large.jpg",

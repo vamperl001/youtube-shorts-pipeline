@@ -33,6 +33,10 @@ export PAID_FALLBACK="${PAID_FALLBACK:-openrouter/qwen/qwen3.5-9b}"
 # Kein Hardcode - llm.py holt freie Modelle dynamisch via /api/v1/models, Fallback via env FALLBACK_MODELS / PAID_FALLBACK
 # Optional setzen: export FALLBACK_MODELS='["openrouter/free"]'
 unset LITELLM_MODEL 2>/dev/null || true
+# Pexels-Key fuer echte Stock-Fotos/Videos (gratis API-Key, 200 Req/h)
+if [ -f /srv/docker/hermes/exchange/env/pexels.env ]; then
+  export PEXELS_API_KEY="$(head -n1 /srv/docker/hermes/exchange/env/pexels.env | tr -d '\r\n ')"
+fi
 # Zentraler Key (raw file, Fallback data/.env)
 if [ -f /srv/docker/hermes/exchange/env/openrouter.env ]; then
   export OPENROUTER_API_KEY="$(head -n1 /srv/docker/hermes/exchange/env/openrouter.env | tr -d '\r\n ')"
@@ -100,7 +104,7 @@ cp "$FINAL" "$DEST"
 echo "OK: $DEST (${DUR}s → 60s mit Musik)" >> "$LOG"
 
 # 6. YouTube-Upload (privat) mit Metadaten + SRT aus dem neuesten Draft
-YOUTUBE_URL=""
+YOUTUBE_URL="$(head -n1 /srv/docker/hermes/exchange/env/pexels.env | tr -d '\r\n ')"
 DRAFT="$(ls -t "$HOME/.verticals/drafts"/*.json 2>/dev/null | head -1)"
 if [ -n "$DRAFT" ] && command -v python3 >/dev/null; then
     YOUTUBE_URL=$(cd /srv/docker/moneymaker/verticals && \
@@ -122,7 +126,7 @@ PYEOF
 )
     if [[ "$YOUTUBE_URL" == UPLOAD_ERROR:* ]]; then
         echo "WARN: YT-Upload fehlgeschlagen: ${YOUTUBE_URL#UPLOAD_ERROR: }" >> "$LOG"
-        YOUTUBE_URL=""
+        YOUTUBE_URL="$(head -n1 /srv/docker/hermes/exchange/env/pexels.env | tr -d '\r\n ')"
     else
         [ -n "$YOUTUBE_URL" ] && echo "OK: YouTube $YOUTUBE_URL" >> "$LOG"
     fi
