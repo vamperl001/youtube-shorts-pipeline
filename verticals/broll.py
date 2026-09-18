@@ -91,18 +91,19 @@ def fetch_stock_images(query: str, n: int, out_dir: Path, start: int,
     import urllib.parse
 
     # Build diverse queries from keywords — rotiere basierend auf start-Offset
-    kw = [w.lower() for w in (keywords or []) if len(w) > 2]
+    # ponytail: generische Woerter filtern (fix: 'fix'->Werkzeugfoto, 'decision'->Business-Meeting im iPhone-Video)
+    GENERIC = {"changes","change","upgrade","decision","decisions","fix","fixes","before","these","those","this","that","should","thing","things","more","most","just","get","got","make","makes","made","take","takes","need","needs","want","like","really","very","much","many","such","when","what","your","their","them","they","here","there","now","today","tonight","wrong","right","best","good","great","real","same","each","every","shows","show","says","says"}
+    kw = [w.lower() for w in (keywords or []) if len(w) > 2 and w.lower() not in GENERIC]
     queries = []
     if kw:
         # Rotiere Keywords basierend auf start (Frame-Index) für Vielfalt
         offset = start % max(len(kw), 1)
         rotated = kw[offset:] + kw[:offset]
-        # Single words
-        for w in rotated[:6]:
-            queries.append(w)
-        # One pair for specificity
+        # Paar zuerst (spezifisch: 'iphone 18'), dann Einzelwoerter
         if len(kw) >= 2:
-            queries.append(f"{kw[0]} {kw[1]}")
+            queries.append(f"{rotated[0]} {rotated[1]}")
+        for w in rotated[:5]:
+            queries.append(w)
     else:
         stop = {"with","and","for","the","your","this","that","from","into"}
         words = [w for w in re.findall(r"[A-Za-z]+", query)
@@ -170,6 +171,56 @@ def _generate_image_pollinations(prompt: str, output_path: Path) -> Path | None:
             pass
         _time.sleep(3)
     return None
+
+def prepare_source_frame(img_path: Path, out_path: Path | None = None) -> Path:
+    """Screenshot-lesbar nach 9:16 komponieren statt Cover-Crop.
+
+    Problem bisher: `animate_frame` skaliert auf Cover + cropt die Mitte —
+    bei Landscape-Screenshots (z. B. og:image 1200x600) fliegen links/rechts
+    weg, danach zoomt Ken Burns noch weiter rein ("bs/" statt ganzem Satz).
+
+    Neu: Full-Text bleibt erhalten (Contain) auf geblurrtem Cover-Hintergrund
+    (ueblicher Shorts-Stil). Vordergrund max. 1000x1320, leicht nach oben
+    gerueckt — unten bleiben ~440px frei fuer Captions (ASS MarginV 25%).
+    """
+    from PIL import ImageFilter, ImageOps
+
+    img = Image.open(img_path)
+    img = ImageOps.exif_transpose(img).convert("RGB")
+    target_w, target_h = VIDEO_WIDTH, VIDEO_HEIGHT
+
+    # Hintergrund: Cover + Blur + Abdunkeln
+    scale_bg = max(target_w / img.width, target_h / img.height)
+    bg = img.resize((int(img.width * scale_bg) + 1, int(img.height * scale_bg) + 1), Image.LANCZOS)
+    left = (bg.width - target_w) // 2
+    top = (bg.height - target_h) // 2
+    bg = bg.crop((left, top, left + target_w, top + target_h))
+    bg = bg.filter(ImageFilter.GaussianBlur(radius=25))
+    # Abdunkeln fuer Kontrast zum Vordergrund
+    from PIL import ImageEnhance
+    bg = ImageEnhance.Brightness(bg).enhance(0.55)
+
+    # Vordergrund: Contain in 1000x1320 (Text bleibt komplett lesbar)
+    max_fw, max_fh = 1000, 1320
+    scale_fg = min(max_fw / img.width, max_fh / img.height, 1.0 * max(target_w / img.width, target_h / img.height))
+    # Hinweis: bewusst KEIN upscale ueber Cover hinaus — Contain reicht;
+    # falls Bild kleiner waere, auf natuerliche Groesse begrenzen via min(...,3.0)
+    scale_fg = min(scale_fg, 3.0)
+    fw, fh = max(1, int(img.width * scale_fg)), max(1, int(img.height * scale_fg))
+    fg = img.resize((fw, fh), Image.LANCZOS)
+    # Feine weiße Einfassung damit Screenshots sich vom Blur-Hintergrund abheben
+    fg = ImageOps.expand(fg, border=3, fill=(255, 255, 255))
+
+    canvas = bg.copy()
+    px = (target_w - fg.width) // 2
+    py = 160 + (1320 - fg.height) // 2  # oben gebunden, unten ~440px Caption-Zone frei
+    py = max(60, min(py, target_h - fg.height - 440))
+    canvas.paste(fg, (px, py))
+
+    dst = out_path or img_path.with_name(img_path.stem + "_fit9x16" + img_path.suffix)
+    canvas.save(dst, quality=92)
+    return dst
+
 
 def _fallback_frame(i: int, out_dir: Path) -> Path:
     """Solid colour fallback frame if Gemini fails."""
@@ -283,7 +334,11 @@ def generate_broll(prompts: list, out_dir: Path, target_frames: int | None = Non
 
 
 def animate_frame(img_path: Path, out_path: Path, duration: float, effect: str = "zoom_in"):
-    """Ken Burns animation on a single frame."""
+    """Ken Burns animation on a single frame.
+
+    `source_subtle` ist fuer Screenshots/Texte: fast statisch (1.00→1.04),
+    damit nichts unlesbar wird. Normale B-Roll-Effekte zoomen weiter.
+    """
     from PIL import ImageOps
     img = Image.open(img_path)
     img = ImageOps.exif_transpose(img)
@@ -297,7 +352,10 @@ def animate_frame(img_path: Path, out_path: Path, duration: float, effect: str =
     sw, sh = w * big, h * big
     d = frames  # shorthand
 
-    if effect == "zoom_in":
+    if effect == "source_subtle":
+        # Fast statisch: 4% Zoom ueber die Clip-Dauer — Text bleibt lesbar
+        zp = f"zoompan=z='1.00+0.04*on/{d}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+    elif effect == "zoom_in":
         # Subtiler Zoom in Produkt-Mitte (12% range, sanft)
         zp = f"zoompan=z='1.12-0.12*on/{d}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
     elif effect == "pan_down":

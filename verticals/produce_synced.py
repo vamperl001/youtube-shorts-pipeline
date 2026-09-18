@@ -195,25 +195,10 @@ def produce_synced(topic: str, niche: str = "selfhosting", lang: str = "en",
         log("Keine Word-Timestamps — keine Untertitel")
 
     # 6. Match images to sections
-    # Topup: fewer images than sections -> stock photos (Openverse) auffuellen,
-    # damit nicht 5x dasselbe Bild laeuft (15.09.: nur 2/8 Source-Images).
+    # ponytail: KI-Bilder ZUERST (broll_prompts sind themenscharf), Stock nur als Reserve
+    # (fix: reines Stock-Video zeigte Werkzeugfotos im iPhone-Guide, 18.09.)
     if len(images) < len(sections):
-        from .broll import fetch_stock_images as _fetch_stock
-        missing = len(sections) - len(images)
-        kw_pool: list[str] = []
-        for sec in sections:
-            for kw in _extract_keywords(sec["text"]):
-                if kw not in kw_pool:
-                    kw_pool.append(kw)
-        try:
-            extra = _fetch_stock(topic, missing, work_dir, len(images),
-                                 keywords=kw_pool[:8] or None)
-            images = list(images) + extra
-            log(f"Stock-Topup: +{len(extra)} Bilder ({len(images)} total)")
-        except Exception as e:
-            log(f"Stock-Topup fehlgeschlagen: {e}")
-    if len(images) < len(sections):
-        # Letzte Reserve: KI-Bilder via Pollinations (kostenlos, keyless)
+        # KI-Bilder via Pollinations (kostenlos, keyless) aus den Draft-Prompts
         from .broll import _generate_image_pollinations as _pollinations
         prompts = (draft.get("broll_prompts", []) if draft else []) or [topic]
         k = 0
@@ -231,6 +216,23 @@ def produce_synced(topic: str, niche: str = "selfhosting", lang: str = "en",
             if k > len(sections) + 2:
                 break
         log(f"Pollinations-Topup: {len(images)} Bilder total")
+    if len(images) < len(sections):
+        # Letzte Reserve: stock photos (Openverse) auffuellen,
+        # damit nicht 5x dasselbe Bild laeuft (15.09.: nur 2/8 Source-Images).
+        from .broll import fetch_stock_images as _fetch_stock
+        missing = len(sections) - len(images)
+        kw_pool: list[str] = []
+        for sec in sections:
+            for kw in _extract_keywords(sec["text"]):
+                if kw not in kw_pool:
+                    kw_pool.append(kw)
+        try:
+            extra = _fetch_stock(topic, missing, work_dir, len(images),
+                                 keywords=kw_pool[:8] or None)
+            images = list(images) + extra
+            log(f"Stock-Topup: +{len(extra)} Bilder ({len(images)} total)")
+        except Exception as e:
+            log(f"Stock-Topup fehlgeschlagen: {e}")
     used = set()
     for sec in sections:
         sec["image"] = _find_best_image(sec["keywords"], images, used)
