@@ -112,7 +112,7 @@ NICHE_TO_SUBREDDITS: dict[str, list[str]] = {
 # All platforms share 9:16 portrait for now; expand here in future.
 # ─────────────────────────────────────────────────────
 PLATFORM_CONFIGS: dict[str, dict] = {
-    "shorts": {"width": 1080, "height": 1920, "max_script_words": 180, "label": "YouTube Shorts"},
+    "shorts": {"width": 1080, "height": 1920, "max_script_words": 140, "label": "YouTube Shorts"},
     "reels":  {"width": 1080, "height": 1920, "max_script_words": 150, "label": "Instagram Reels"},
     "tiktok": {"width": 1080, "height": 1920, "max_script_words": 150, "label": "TikTok"},
 }

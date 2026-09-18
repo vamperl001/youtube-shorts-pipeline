@@ -133,7 +133,14 @@ def fetch_stock_images(query: str, n: int, out_dir: Path, start: int,
     # ponytail: generische Woerter filtern (fix: 'fix'->Werkzeugfoto, 'decision'->Business-Meeting im iPhone-Video)
     GENERIC = {"changes","change","upgrade","decision","decisions","fix","fixes","before","these","those","this","that","should","thing","things","more","most","just","get","got","make","makes","made","take","takes","need","needs","want","like","really","very","much","many","such","when","what","your","their","them","they","here","there","now","today","tonight","wrong","right","best","good","great","real","same","each","every","shows","show","says","says"}
     kw = [w.lower() for w in (keywords or []) if len(w) > 2 and w.lower() not in GENERIC]
+    # ponytail: Topic-Anker aus query (Prompt) zuerst - fixt Herbst-Bilder
+    # bei Queries wie 'spend'/'dollar'/'last' (Buyers Guide 18.09.)
+    tq = [w.lower() for w in query.split()[:10]
+          if len(w) > 2 and w.lower() not in GENERIC
+          and w.lower() not in ("with", "and", "side", "clean")]
     queries = []
+    if len(tq) >= 2:
+        queries.append(f"{tq[0]} {tq[1]}")
     if kw:
         # Rotiere Keywords basierend auf start (Frame-Index) für Vielfalt
         offset = start % max(len(kw), 1)
@@ -327,6 +334,10 @@ def generate_broll(prompts: list, out_dir: Path, target_frames: int | None = Non
                 "some","any","all","each","every","more","most","less","few","own",
                 "put","take","come","go","look","want","give","keep","seem","tell",
                 "need","try","ask","turn","start","show","work","call","move","live",
+        "you","your","yours","spend","spends","dollar","dollars","last",
+        "week","year","time","times","day","days","thing","things",
+        "get","gets","got","give","gives","take","takes","come","came",
+        "much","many","such","very","really","just","than","then",
                 "changes","change","upgrade","upgrades","decision","decisions","fix","fixes","before",
                 "these","those","should","against","between","while","after",
                 "feel","leave","bring","happen","must","really","already","back",
