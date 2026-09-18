@@ -49,6 +49,30 @@ def _generate_image_gemini(prompt: str, output_path: Path, api_key: str):
     raise RuntimeError("No image in Gemini response")
 
 
+def _pexels_search_urls(query: str, n: int) -> list[str]:
+    """Pexels-Suche -> direkte Bild-URLs (portrait bevorzugt). Key aus Env."""
+    import os
+    import json as _json2
+    import urllib.parse
+    import urllib.request
+    api_key = os.environ.get("PEXELS_API_KEY", "")
+    if not api_key:
+        return []
+    url = "https://api.pexels.com/v1/search?" + urllib.parse.urlencode(
+        {"query": query, "per_page": min(n + 6, 20), "orientation": "portrait"})
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": api_key})
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = _json2.loads(resp.read())
+        out = []
+        for ph in data.get("photos", []):
+            src = ph.get("src", {})
+            out.append(src.get("portrait") or src.get("large2x") or src.get("original"))
+        return [u for u in out if u]
+    except Exception:
+        return []
+
+
 def _fetch_stock_pexels(prompt: str, output_path: Path) -> Path | None:
     """Pexels Stock-Foto: echte Fotos statt KI-Generation. Portrait 9:16 bevorzugt."""
     import os, time as _time, urllib.parse
@@ -83,6 +107,21 @@ def _fetch_stock_pexels(prompt: str, output_path: Path) -> Path | None:
         log(f"Pexels-Fehler: {e}")
         return None
 
+def download_stock_url(url: str, dst: Path) -> bool:
+    """Generischer Stock-Download mit Mindestgroesse."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "verticals/1.0"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = resp.read()
+        if len(data) < 30000:
+            return False
+        dst.write_bytes(data)
+        return True
+    except Exception:
+        return False
+
+
 def fetch_stock_images(query: str, n: int, out_dir: Path, start: int,
                        keywords: list[str] | None = None) -> list[Path]:
     """Keyless CC-Fotos von Openverse — mehrere Suchbegriffe für Vielfalt."""
@@ -114,7 +153,19 @@ def fetch_stock_images(query: str, n: int, out_dir: Path, start: int,
     got = []
     seen_ids = set()
 
+    pex_urls: list[str] = []
+    for q_text in queries[:3]:
+        if len(pex_urls) >= n:
+            break
+        pex_urls += _pexels_search_urls(q_text, n)
     for q_text in queries[:6]:
+        if len(got) >= n:
+            break
+        while pex_urls and len(got) < n:
+            u = pex_urls.pop(0)
+            dst = out_dir / f"stock_{start + len(got)}.jpg"
+            if download_stock_url(u, dst):
+                got.append(dst)
         if len(got) >= n:
             break
         q = urllib.parse.quote(q_text)
@@ -276,6 +327,8 @@ def generate_broll(prompts: list, out_dir: Path, target_frames: int | None = Non
                 "some","any","all","each","every","more","most","less","few","own",
                 "put","take","come","go","look","want","give","keep","seem","tell",
                 "need","try","ask","turn","start","show","work","call","move","live",
+                "changes","change","upgrade","upgrades","decision","decisions","fix","fixes","before",
+                "these","those","should","against","between","while","after",
                 "feel","leave","bring","happen","must","really","already","back",
                 "even","still","also","right","thing","things","people","time",
                 "day","way","lot","think","know","see","come","take","want","look",
