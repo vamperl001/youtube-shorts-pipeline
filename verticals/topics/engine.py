@@ -112,7 +112,7 @@ class TopicEngine:
                 unique.append(t)
 
         # ponytail: blacklist Werbe-/Meta-Topics (Show HN / Ask HN / mysetup.ai) - user: heutiges Topic war HN-Werbung
-        _black = ("show hn:", "ask hn:", "launch hn:", "mysetup.ai")
+        _black = ("show hn:", "ask hn:", "launch hn:", "mysetup.ai", "buyer\'s guide", "buyers guide")
         before = len(unique)
         unique = [t for t in unique if not any(b in t.title.lower() or b in (t.url or "").lower() for b in _black)]
         if len(unique) < before:

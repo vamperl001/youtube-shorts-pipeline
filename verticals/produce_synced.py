@@ -11,7 +11,7 @@ from .log import log
 from .llm import call_llm
 from .tts import generate_voiceover
 from .source_images import sources_for_topic, fetch_source_images
-from .broll import animate_frame
+from .broll import animate_frame, prepare_source_frame
 from .assemble import get_audio_duration
 
 
@@ -27,7 +27,9 @@ def _extract_keywords(text: str) -> list[str]:
     stop = {"the","a","an","is","are","was","were","and","or","but","in","on","at",
             "to","for","of","with","by","from","that","this","it","its","you","your",
             "has","have","had","can","will","just","also","than","so","if","not"}
-    return [w.lower() for w in re.findall(r'[A-Za-z]{3,}', text) if w.lower() not in stop][:4]
+    # ponytail: keep version numbers for iPhone etc (iphone 18 -> keep 18)
+    words = re.findall(r'[A-Za-z]{3,}|\b\d{1,2}\b', text)
+    return [w.lower() for w in words if w.lower() not in stop][:5]
 
 
 def _category_keywords():
@@ -41,6 +43,10 @@ def _category_keywords():
 
 
 def _find_best_image(keywords: list[str], images: list[Path], used: set) -> Path:
+    # Round-Robin: wenn alle Bilder schon vergeben sind, beginnt eine neue
+    # Runde (statt wie bisher immer images[0] -> "5x selbes Bild").
+    if len(used) >= len(images):
+        used.clear()
     cats = _category_keywords()
     best_idx, best_score = 0, -1
     for i, img in enumerate(images):
@@ -156,7 +162,75 @@ def produce_synced(topic: str, niche: str = "selfhosting", lang: str = "en",
     for i in range(len(sections)):
         sections[i]["end"] = sections[i+1]["start"] if i+1 < len(sections) else duration
 
+    # 6b. Captions (Mitlese-Text): aus den vorhandenen Whisper-Word-Timestamps
+    # SRT + ASS erzeugen — kein extra Whisper-Lauf noetig. Das ASS wird im
+    # Final-Mux eingebrannt (libass), das SRT landet im Draft als srt_<lang>
+    # und wird von daily_run.sh als YouTube-Untertitel hochgeladen.
+    # (Regression 09/2026: produce_synced hatte beides verloren.)
+    srt_final: Path | None = None
+    ass_path: Path | None = None
+    if words:
+        try:
+            from .captions import _generate_srt, _generate_ass
+            from .niche import load_niche as _load_niche, get_caption_config as _get_cap_cfg
+            try:
+                _cap_cfg = _get_cap_cfg(_load_niche(niche))
+            except Exception:
+                _cap_cfg = {}
+            _srt = work_dir / f"captions_{lang}.srt"
+            _ass = work_dir / f"captions_{lang}.ass"
+            _generate_srt(words, _srt,
+                          group_size=int(_cap_cfg.get("words_per_group", 4)))
+            _generate_ass(words, _ass,
+                          highlight_color=_cap_cfg.get("highlight_color", "#00FF88"),
+                          group_size=int(_cap_cfg.get("words_per_group", 4)),
+                          font_family="DejaVu Sans", font_size=72)
+            srt_final = MEDIA_DIR / f"verticals_{job_id}_{lang}.srt"
+            shutil.copy2(_srt, srt_final)
+            ass_path = _ass
+            log(f"Captions: {srt_final.name} + burn-in ASS bereit")
+        except Exception as e:
+            log(f"Captions fehlgeschlagen: {e} — weiter ohne Untertitel")
+    else:
+        log("Keine Word-Timestamps — keine Untertitel")
+
     # 6. Match images to sections
+    # Topup: fewer images than sections -> stock photos (Openverse) auffuellen,
+    # damit nicht 5x dasselbe Bild laeuft (15.09.: nur 2/8 Source-Images).
+    if len(images) < len(sections):
+        from .broll import fetch_stock_images as _fetch_stock
+        missing = len(sections) - len(images)
+        kw_pool: list[str] = []
+        for sec in sections:
+            for kw in _extract_keywords(sec["text"]):
+                if kw not in kw_pool:
+                    kw_pool.append(kw)
+        try:
+            extra = _fetch_stock(topic, missing, work_dir, len(images),
+                                 keywords=kw_pool[:8] or None)
+            images = list(images) + extra
+            log(f"Stock-Topup: +{len(extra)} Bilder ({len(images)} total)")
+        except Exception as e:
+            log(f"Stock-Topup fehlgeschlagen: {e}")
+    if len(images) < len(sections):
+        # Letzte Reserve: KI-Bilder via Pollinations (kostenlos, keyless)
+        from .broll import _generate_image_pollinations as _pollinations
+        prompts = (draft.get("broll_prompts", []) if draft else []) or [topic]
+        k = 0
+        while len(images) < len(sections):
+            dst = work_dir / f"pollinations_{len(images)}.jpg"
+            try:
+                got = _pollinations(prompts[k % len(prompts)], dst)
+            except Exception:
+                got = None
+            if got:
+                images = list(images) + [Path(got)]
+            else:
+                break
+            k += 1
+            if k > len(sections) + 2:
+                break
+        log(f"Pollinations-Topup: {len(images)} Bilder total")
     used = set()
     for sec in sections:
         sec["image"] = _find_best_image(sec["keywords"], images, used)
@@ -170,12 +244,27 @@ def produce_synced(topic: str, niche: str = "selfhosting", lang: str = "en",
     import random
     effects = ["zoom_in", "scale_reveal", "pan_down", "drift", "zoom_out", "pan_up"]
     random.shuffle(effects)
+    xdur = 0.5
+    # Nur animierbare Sektionen (>=0.3s); XFade frisst (n-1)*xdur Sekunden —
+    # darum jedes Segment (ausser letztem) um +xdur verlaengern, sonst ist das
+    # Video kuerzer als der Voiceover und der letzte Satz wird abgeschnitten
+    # (15.09.: Video 44.47s < Audio 46.34s -> ~2s Sprache fehlten).
+    anim_secs = [sec for sec in sections if sec["duration"] >= 0.3]
     animated = []
-    for i, sec in enumerate(sections):
-        if sec["duration"] < 0.3:
-            continue
+    anim_durs: list[float] = []
+    for i, sec in enumerate(anim_secs):
         anim = work_dir / f"sync_{i}.mp4"
-        animate_frame(sec["image"], anim, sec["duration"] + 0.1, effects[i % len(effects)])
+        seg_dur = sec["duration"] + (xdur if i < len(anim_secs) - 1 else 0.0) + 0.1
+        anim_durs.append(seg_dur)
+        # Source-Screenshots: lesbar komponieren (Contain+Blur) + subtil animieren.
+        # Verhindert abgeschnittene Infos wie am 14.09. ("bs/" statt ganzem Satz).
+        try:
+            fitted = work_dir / f"sync_{i}_fit.jpg"
+            prepare_source_frame(sec["image"], fitted)
+            animate_frame(fitted, anim, seg_dur, "source_subtle")
+        except Exception as e:
+            log(f"Source-Fit fehlgeschlagen ({sec['image'].name}): {e} — Fallback Cover")
+            animate_frame(sec["image"], anim, seg_dur, effects[i % len(effects)])
         animated.append(anim)
 
     if not animated:
@@ -183,7 +272,6 @@ def produce_synced(topic: str, niche: str = "selfhosting", lang: str = "en",
         return None
 
     # XFade chain (bei 1 Segment entfällt der Filter)
-    xdur = 0.5
     n = len(animated)
 
     if n == 1:
@@ -193,12 +281,12 @@ def produce_synced(topic: str, niche: str = "selfhosting", lang: str = "en",
         for p in animated:
             inputs += ["-i", str(p)]
 
-        # Calculate xfade offsets based on section durations
-        acc = 0
+        # Offsets aus den verlaengerten Segmentdauern: Summe == Voiceover-Dauer
         offsets = []
-        for sec in sections[:n-1]:
-            acc += sec["duration"]
-            offsets.append(max(acc - xdur * len(offsets), 0.01))
+        acc = 0.0
+        for k in range(n - 1):
+            acc += anim_durs[k]
+            offsets.append(max(acc - xdur * (k + 1), 0.01))
 
         transitions = random.choices(
             ["fade", "smoothup", "smoothleft", "circleopen", "dissolve"],
@@ -213,11 +301,24 @@ def produce_synced(topic: str, niche: str = "selfhosting", lang: str = "en",
                  "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
                  str(merged), "-y", "-loglevel", "error"])
 
-    # Final: video + voiceover
+    # Final: video + voiceover (+ ASS-Burn-in wenn moeglich)
     out_path = MEDIA_DIR / f"verticals_{job_id}_{lang}.mp4"
-    run_cmd(["ffmpeg", "-i", str(merged), "-i", str(vo_path),
-             "-c:v", "copy", "-c:a", "aac", "-t", f"{duration:.3f}",
-             str(out_path), "-y", "-loglevel", "quiet"])
+    _vf = None
+    if ass_path and ass_path.exists():
+        from .assemble import _ffmpeg_has_libass
+        if _ffmpeg_has_libass():
+            _vf = f"ass={str(ass_path).replace(chr(92), chr(92)*2).replace(':', chr(92)+':').replace(chr(39), chr(92)+chr(39))}"
+        else:
+            log("WARNING: ffmpeg ohne libass — kein Burn-in, SRT geht trotzdem zu YouTube")
+    _cmd = ["ffmpeg", "-i", str(merged), "-i", str(vo_path)]
+    if _vf:
+        _cmd += ["-vf", _vf]
+    _cmd += ["-c:v", "libx264" if _vf else "copy"]
+    if _vf:
+        _cmd += ["-preset", "fast", "-pix_fmt", "yuv420p"]
+    _cmd += ["-c:a", "aac", "-t", f"{duration:.3f}",
+             str(out_path), "-y", "-loglevel", "quiet"]
+    run_cmd(_cmd)
 
     log(f"Video: {out_path} ({duration:.1f}s)")
 
@@ -230,6 +331,8 @@ def produce_synced(topic: str, niche: str = "selfhosting", lang: str = "en",
         "youtube_tags": ",".join(set(re.findall(r'[a-zA-Z]{4,}', topic.lower()))),
         f"video_{lang}": str(out_path),
     }
+    if srt_final and srt_final.exists():
+        draft[f"srt_{lang}"] = str(srt_final)
     draft_path = Path.home() / ".verticals/drafts" / f"{job_id}.json"
     draft_path.write_text(json.dumps(draft, indent=2, ensure_ascii=False))
     log(f"Draft: {draft_path}")

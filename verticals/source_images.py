@@ -356,11 +356,28 @@ def sources_for_topic(topic: str, topic_url: str = "") -> list[dict]:
     else:
         log("Kein HN-Treffer — nur Website + Reddit")
 
-    # Apple topics
-    if any(w in t for w in ["mac", "apple", "iphone", "ipad", "macbook", "mac studio", "mac mini"]):
+    # Apple topics - ponytail: nur passende Geräte, nicht immer Mac Mini/Studio (fix: iPhone 18 zeigte Mac Mini)
+    if any(w in t for w in ["mac", "apple", "iphone", "ipad", "macbook", "mac studio", "mac mini", "watch", "airpods"]):
         sources.append({"type": "presskit", "domain": "apple.com", "keywords": t.split()})
-        sources.append({"type": "screenshot", "url": "https://www.apple.com/mac-mini/"})
-        sources.append({"type": "screenshot", "url": "https://www.apple.com/mac-studio/"})
+        # topic-spezifische Apple-Seiten
+        if "iphone" in t:
+            if "18" in t:
+                sources.append({"type": "screenshot", "url": "https://www.apple.com/iphone-18-pro/"})
+            else:
+                sources.append({"type": "screenshot", "url": "https://www.apple.com/iphone/"})
+        if "macbook" in t:
+            sources.append({"type": "screenshot", "url": "https://www.apple.com/macbook-air/"})
+        if "mac mini" in t:
+            sources.append({"type": "screenshot", "url": "https://www.apple.com/mac-mini/"})
+        if "mac studio" in t:
+            sources.append({"type": "screenshot", "url": "https://www.apple.com/mac-studio/"})
+        if "watch" in t:
+            sources.append({"type": "screenshot", "url": "https://www.apple.com/watch/"})
+        if "ipad" in t:
+            sources.append({"type": "screenshot", "url": "https://www.apple.com/ipad-pro/"})
+        # Fallback nur wenn kein spezifisches Gerät erkannt
+        if not any(k in t for k in ["iphone","macbook","mac mini","mac studio","watch","ipad"]):
+            sources.append({"type": "screenshot", "url": "https://www.apple.com/"})
 
     # GitHub / open source
     if any(w in t for w in ["github", "open source", "foss", "git"]):
