@@ -534,6 +534,74 @@ def cmd_editorial(args):
         print(f"  WARN: Fallback verwendet ({result.get('_error','')})")
     return out_path
 
+def cmd_script(args):
+    """Script: gesprochenes Briefing aus Editorial (Phase 4)."""
+    import json
+    from pathlib import Path
+    from datetime import datetime, timezone
+    from .config import RUNS_DIR
+    from .script import generate_script
+
+    run_dir = getattr(args, "run_dir", None)
+    if run_dir:
+        run_dir = Path(run_dir)
+    else:
+        base = Path(getattr(args, "out", None)) if getattr(args, "out", None) else RUNS_DIR
+        if args.niche:
+            candidates = sorted(base.glob(f"*_{args.niche}_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not candidates:
+                candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        else:
+            candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            print(f"  Kein Run gefunden in {base} — erst ingest+editorial")
+            sys.exit(1)
+        run_dir = candidates[0]
+
+    if not (run_dir / "editorial.json").exists():
+        print(f"  editorial.json fehlt in {run_dir} — erst editorial ausführen")
+        sys.exit(1)
+    if not (run_dir / "articles.json").exists():
+        print(f"  articles.json fehlt in {run_dir}")
+        sys.exit(1)
+
+    editorial = json.loads((run_dir / "editorial.json").read_text())
+    # strip _meta/_llm_raw for generation
+    editorial_clean = {k: v for k, v in editorial.items() if not k.startswith("_")}
+    articles = json.loads((run_dir / "articles.json").read_text())
+    niche = getattr(args, "niche", None) or editorial.get("_meta", {}).get("niche") or "apple"
+    # try to get niche from run_dir name
+    if not niche or niche == "general":
+        # parse niche from run_dir like 2026-09-22T..._apple_...
+        parts = run_dir.name.split("_")
+        if len(parts) >= 3:
+            niche = parts[-2] if parts[-2] in ["apple", "general", "tech", "selfhosting"] else "apple"
+
+    provider = getattr(args, "provider", None)
+    print(f"\n  Script für {run_dir.name} — {len(editorial_clean.get('stories',[]))} Stories, Niche {niche}, Provider {provider or 'auto'}")
+    result = generate_script(editorial_clean, articles, edition=editorial_clean.get("edition"), niche=niche, provider=provider)
+
+    qc_ok = "_fallback" not in result
+    out_path = run_dir / "script.json"
+    to_save = dict(result)
+    to_save["_meta"] = {
+        "run_dir": str(run_dir),
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "provider": provider or "auto",
+        "niche": niche,
+        "qc_pass": qc_ok,
+        "word_count": result.get("word_count", 0),
+    }
+    out_path.write_text(json.dumps(to_save, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"  Script → {out_path} ({result.get('word_count',0)} Worte, qc={'pass' if qc_ok else 'fallback'})")
+    print(f"  Intro: {result.get('intro','')[:100]}")
+    for s in result.get("stories", []):
+        print(f"    {s['story_id']}: {s['text'][:80]} ({s.get('duration_target',0)}s)")
+    print(f"  Outro: {result.get('outro','')[:100]}")
+    if not qc_ok:
+        print(f"  WARN: Fallback ({result.get('_error','')})")
+    return out_path
+
 def cmd_ingest(args):
     """RSS (+Reddit Phase2) → normalized articles → runs/<ts>/ persistence."""
     import json
@@ -814,6 +882,13 @@ def main():
     p_editorial.add_argument("--edition", default=None, help="Edition Datum YYYY-MM-DD (default heute)")
     p_editorial.add_argument("--provider", default=None, help="LLM: gemini, openai, claude, ollama (default auto)")
 
+    # script (Phase 4)
+    p_script = sub.add_parser("script", help="Phase 4: Script (gesprochenes Briefing) aus Editorial (LLM)")
+    p_script.add_argument("--run-dir", default=None, help="Run-Verzeichnis (default: neuester in ~/.verticals/runs)")
+    p_script.add_argument("--niche", default=None, help="Niche für latest-Fallback / Tone (default aus Run)")
+    p_script.add_argument("--out", default=None, help="Runs-Basis dir (default ~/.verticals/runs)")
+    p_script.add_argument("--provider", default=None, help="LLM: gemini, openai, claude, ollama (default auto)")
+
     # prune
     p_prune = sub.add_parser("prune", help="Cleanup: work dirs nach Upload + alte media")
     p_prune.add_argument("--work-dir", default=None, help="Einzelnes work_* Verzeichnis nach Upload löschen")
@@ -843,6 +918,9 @@ def main():
         return
     if args.cmd == "editorial":
         cmd_editorial(args)
+        return
+    if args.cmd == "script":
+        cmd_script(args)
         return
 
     maybe_run_setup(args)
@@ -891,6 +969,8 @@ def main():
         cmd_prune(args)
     elif args.cmd == "editorial":
         cmd_editorial(args)
+    elif args.cmd == "script":
+        cmd_script(args)
 
 
 if __name__ == "__main__":
