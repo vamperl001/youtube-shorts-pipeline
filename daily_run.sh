@@ -19,17 +19,22 @@ else
     exit 1
 fi
 
-# Fixed: stabiles Gemini Modell (statt sorted()[−1]=nano-banana 429). ponytail: pin, dynamisch nur wenn nötig
-if [ -z "${GEMINI_LLM_MODEL:-}" ]; then
-  GEMINI_LLM_MODEL="gemini-flash-latest"
+# Smart routing: GEMINI_LLM_MODEL nicht mehr gepinnt — model_routing.py wählt bestes Google-Modell live
+# Falls env leer, lässt config.py (get_gemini_llm_model) via OpenRouter entscheiden
+if [ -n "${GEMINI_LLM_MODEL:-}" ]; then
   export GEMINI_LLM_MODEL
   export GEMINI_MODEL="$GEMINI_LLM_MODEL"
+else
+  unset GEMINI_LLM_MODEL 2>/dev/null || true
+  unset GEMINI_MODEL 2>/dev/null || true
 fi
 export GEMINI_MAX_TOKENS=8192
 # Fallback-Kette (llm.py): Gemini direkt -> PAID zuerst -> Free-Reserve.
 # Paid-Default verifiziert (15.09., antwortet, ~0.005ct/Draft); altes
 # google/gemini-2.0-flash-001 ist bei OpenRouter retired (404).
-export PAID_FALLBACK="${PAID_FALLBACK:-openrouter/openai/gpt-4o-mini}"
+# PAID_FALLBACK nicht mehr gepinnt — llm.py nutzt jetzt smart routing (model_routing.py, Cache 1h)
+# Manuell überschreiben: export PAID_FALLBACK="openrouter/openai/gpt-4o-mini,openrouter/qwen/qwen-2.5-7b-instruct"
+unset PAID_FALLBACK 2>/dev/null || true
 # Kein Hardcode - llm.py holt freie Modelle dynamisch via /api/v1/models, Fallback via env FALLBACK_MODELS / PAID_FALLBACK
 # Optional setzen: export FALLBACK_MODELS='["openrouter/free"]'
 unset LITELLM_MODEL 2>/dev/null || true

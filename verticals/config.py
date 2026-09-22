@@ -175,14 +175,48 @@ def get_gemini_key() -> str:
 
 
 def get_gemini_llm_model() -> str:
-    # Env-ueberschreibbarer LLM-Modellname (kein hartkodierter Fixpunkt).
-    return os.environ.get("GEMINI_LLM_MODEL", "gemini-flash-latest")
+    # Smart: wenn GEMINI_LLM_MODEL env gesetzt -> nimm den, sonst bestes Google-Modell dynamisch
+    env = os.environ.get("GEMINI_LLM_MODEL", "").strip()
+    if env:
+        return env
+    try:
+        from .model_routing import get_best_for_provider
+        best = get_best_for_provider("google", limit=1)
+        if best:
+            # openrouter/google/gemini-... -> gemini-...
+            m = best[0].replace("openrouter/", "")
+            # strip provider prefix, return only model part after google/
+            if "/" in m:
+                return m.split("/", 1)[1]
+            return m
+    except Exception:
+        pass
+    return "gemini-flash-latest"  # letzter Fallback, nur wenn Routing offline
 
 
 def get_gemini_image_model() -> str:
-    # Kein -image-latest-Alias bei Google; Default auf stabil verfuegbares Bildmodell,
-    # Env-Override inklusive.
-    return os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+    # Smart: env gewinnt, sonst bestes Image-Modell via Routing (kein Hardcode-Pin)
+    env = os.environ.get("GEMINI_IMAGE_MODEL", "").strip()
+    if env:
+        return env
+    try:
+        from .model_routing import get_best_for_provider
+        best = get_best_for_provider("google", limit=1)
+        # bevorzuge image-fähige (enthält image), sonst erstes google
+        for b in best:
+            if "image" in b.lower():
+                m = b.replace("openrouter/", "")
+                if "/" in m:
+                    return m.split("/", 1)[1]
+                return m
+        if best:
+            m = best[0].replace("openrouter/", "")
+            if "/" in m:
+                return m.split("/", 1)[1]
+            return m
+    except Exception:
+        pass
+    return "gemini-2.5-flash-image"  # letzter Fallback, nur wenn Routing offline
 
 
 def get_youtube_token_path() -> Path:

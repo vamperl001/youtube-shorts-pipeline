@@ -108,49 +108,43 @@ def _openrouter_key() -> str:
 
 
 def _openrouter_fallbacks() -> list:
-    """Failover chain: BEZAHLT zuerst, Free-Modelle nur als letzte Reserve.
-    (User-Entscheidung 15.09.: lieber ~2ct/Video als trunkierte Drafts, 22.09. paid auf gpt-4o-mini gepinnt weil qwen 3.5 empty)."""
+    """Smart routing: dynamisch beste Modelle (kein Hardcode).
+
+    - PAID_FALLBACK env überschreibt (manuell pin wenn nötig)
+    - sonst model_routing.get_paid_fallbacks() live via OpenRouter (Cache 1h, Score: Preis+JSON+Kontext)
+    - FALLBACK_MODELS env überschreibt freie Modelle, sonst keine Free per Default (instabil 22.09.)
+    """
     _openrouter_key()
-    paid = os.environ.get("PAID_FALLBACK", "openrouter/openai/gpt-4o-mini")
-    fb = os.environ.get("FALLBACK_MODELS", "")
-    if fb:
-        try:
-            free_models = json.loads(fb) if fb.strip().startswith("[") else [x.strip() for x in fb.split(",") if x.strip()]
-        except Exception:
-            free_models = ["openrouter/free"]
-    else:
-        # dynamisch freie Modelle holen, sonst Default-Kette
-        try:
-            import requests
-            r = requests.get("https://openrouter.ai/api/v1/models", timeout=5)
-            free_models = [m["id"] for m in r.json().get("data", []) if ":free" in m["id"]][:3]
-            free_models = ["openrouter/free"] + [f"openrouter/{m}" for m in free_models]
-        except Exception:
-            free_models = ["openrouter/free"]
-    # Paid an erste Stelle (dedupliziert), Free danach als Notnagel
-    return [paid] + [m for m in free_models if m != paid]
+    # 1. Manueller Pin hat Vorrang (für Notfälle)
+    paid_env = os.environ.get("PAID_FALLBACK", "").strip()
+    if paid_env:
+        paid_list = [p.strip() for p in paid_env.split(",") if p.strip()]
+        # wenn PAID_FALLBACK mehrere enthält, nutze die Liste
+        return paid_list
+    # 2. Smart routing: dynamisch beste 3 (kein Hardcode)
+    try:
+        from .model_routing import get_paid_fallbacks
+        smart = get_paid_fallbacks()
+        if smart:
+            return smart
+    except Exception as e:
+        log(f"Smart routing fehlgeschlagen {e} — Fallback auf minimal")
+    # 3. Minimal fallback (wenn API offline)
+    return ["openrouter/openai/gpt-4o-mini", "openrouter/qwen/qwen-2.5-7b-instruct"]
 
 
 def _ollama_model() -> str:
-    """Pick the best local Ollama model. Tries models in preference order."""
+    """Pick best local Ollama model — dynamisch, kein Hardcode-Pin (ponytail: erstes verfügbares)."""
     import requests
-
     try:
         tags = requests.get("http://localhost:11434/api/tags", timeout=5).json()
         available = [m["name"] for m in tags.get("models", [])]
     except Exception:
         raise RuntimeError("Ollama not running. Start with: ollama serve")
-
     if not available:
         raise RuntimeError("No Ollama models found. Pull one: ollama pull llama3.1:8b")
-
-    preferred = ["llama3.1:8b", "llama3:8b", "mistral", "gemma2", "qwen2.5:7b"]
-    for pref in preferred:
-        for avail in available:
-            if pref in avail:
-                log(f"Using Ollama model: {avail}")
-                return f"ollama/{avail}"
-    log(f"Using Ollama model: {available[0]}")
+    # ponytail: nimm erstes verfügbares, kein Hardcode-Ranking — lokales Modell ist eh User-Choice
+    log(f"Using Ollama model: {available[0]} (aus {len(available)} verfügbaren)")
     return f"ollama/{available[0]}"
 
 
@@ -174,25 +168,43 @@ def call_llm(prompt: str, provider: str | None = None, max_tokens: int = 1500) -
         return call_claude_cli(prompt, max_tokens=max_tokens)
     if provider == "claude":
         if get_anthropic_key():
-            return _call_litellm(prompt, max_tokens, model="anthropic/claude-sonnet-4-6",
-                                 api_key=get_anthropic_key())
+            # smart: best anthropic via routing, kein Hardcode claude-sonnet-4-6
+            try:
+                from .model_routing import get_best_for_provider
+                best = get_best_for_provider("anthropic", limit=1)
+                # best is openrouter/anthropic/... -> strip to anthropic/...
+                model = best[0].replace("openrouter/", "") if best else "anthropic/claude-sonnet-4-6"
+                if not model.startswith("anthropic/"):
+                    model = "anthropic/" + model.split("/")[-1]
+            except Exception:
+                model = "anthropic/claude-sonnet-4-6"
+            return _call_litellm(prompt, max_tokens, model=model, api_key=get_anthropic_key())
         if has_claude_cli():
             return call_claude_cli(prompt, max_tokens=max_tokens)
-        raise RuntimeError(
-            "No Claude access found. Set ANTHROPIC_API_KEY or install Claude Code."
-        )
+        raise RuntimeError("No Claude access found. Set ANTHROPIC_API_KEY or install Claude Code.")
     if provider == "gemini":
         api_key = get_gemini_key()
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY not set")
         max_tokens = int(os.environ.get("GEMINI_MAX_TOKENS", max_tokens))
-        # ponytail: manual fallback loop statt litellm-fallbacks (die reuse'n api_key falsch -> 401)
-        gemini_model = f"gemini/{get_gemini_llm_model()}"
+        # smart: best google model via routing, fallback auf env oder Auto
+        try:
+            from .model_routing import get_best_for_provider
+            best_g = get_best_for_provider("google", limit=1)
+            if best_g:
+                # openrouter/google/gemini-... -> gemini/...
+                gemini_model = best_g[0].replace("openrouter/", "")
+                # ensure gemini/ prefix for litellm
+                if not gemini_model.startswith("gemini/"):
+                    gemini_model = f"gemini/{gemini_model.split('/')[-1]}"
+            else:
+                gemini_model = f"gemini/{get_gemini_llm_model()}"
+        except Exception:
+            gemini_model = f"gemini/{get_gemini_llm_model()}"
         try:
             return _call_litellm(prompt, max_tokens, model=gemini_model, api_key=api_key)
         except Exception as e:
-            log(f"Gemini {gemini_model} failed: {e} -> trying OpenRouter fallbacks")
-            # OpenRouter fallback chain manuell mit korrektem Key pro Modell
+            log(f"Gemini {gemini_model} failed: {e} -> trying OpenRouter smart fallbacks")
             o_key = _openrouter_key()
             if not o_key:
                 raise
@@ -208,7 +220,16 @@ def call_llm(prompt: str, provider: str | None = None, max_tokens: int = 1500) -
         api_key = get_minimax_key()
         if not api_key:
             raise RuntimeError("MINIMAX_API_KEY not set")
-        return _call_litellm(prompt, max_tokens, model="openai/MiniMax-M2.7",
+        # smart: best minimax via routing, fallback auf bekanntes
+        try:
+            from .model_routing import get_best_for_provider
+            best_m = get_best_for_provider("minimax", limit=1)
+            model_m = best_m[0].replace("openrouter/", "") if best_m else "MiniMax-M2.7"
+            if "minimax" not in model_m.lower():
+                model_m = "MiniMax-M2.7"
+        except Exception:
+            model_m = "MiniMax-M2.7"
+        return _call_litellm(prompt, max_tokens, model=f"openai/{model_m}",
                              api_key=api_key,
                              api_base=os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.io/v1"),
                              temperature=1.0)
@@ -216,7 +237,15 @@ def call_llm(prompt: str, provider: str | None = None, max_tokens: int = 1500) -
         api_key = os.environ.get("OPENAI_API_KEY") or load_config().get("OPENAI_API_KEY", "")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not set")
-        return _call_litellm(prompt, max_tokens, model="openai/gpt-4o-mini", api_key=api_key)
+        try:
+            from .model_routing import get_best_for_provider
+            best_o = get_best_for_provider("openai", limit=1)
+            model_o = best_o[0].replace("openrouter/", "") if best_o else "openai/gpt-4o-mini"
+            if not model_o.startswith("openai/"):
+                model_o = f"openai/{model_o.split('/')[-1]}"
+        except Exception:
+            model_o = "openai/gpt-4o-mini"
+        return _call_litellm(prompt, max_tokens, model=model_o, api_key=api_key)
     if provider == "ollama":
         return _call_litellm(prompt, max_tokens, model=_ollama_model(), timeout=120)
     if provider == "litellm":
@@ -228,18 +257,17 @@ def _call_litellm(prompt: str, max_tokens: int, model: str | None = None,
                   fallbacks: list | None = None, api_key: str | None = None,
                   api_base: str | None = None, temperature: float = 0.7,
                   timeout: int | None = None) -> str:
-    """Call any LLM provider via the litellm SDK.
-
-    model defaults to LITELLM_MODEL (e.g. anthropic/claude-sonnet-4-20250514,
-    azure/gpt-4o, bedrock/anthropic.claude-3-haiku, openai/gpt-4o).
-    LiteLLM reads provider API keys from env vars automatically; api_key /
-    api_base override per call. fallbacks fail over to the next model on error.
-
-    See https://docs.litellm.ai/docs/providers for all supported models.
-    """
+    """Call any LLM provider via the litellm SDK — smart routing, kein Hardcode-Pin."""
     import litellm
 
-    model = model or os.environ.get("LITELLM_MODEL", "openai/gpt-4o")
+    if not model:
+        # smart: best general model dynamisch (kein Hardcode gpt-4o)
+        try:
+            from .model_routing import get_best_models
+            best = get_best_models(task="general", limit=1)
+            model = best[0] if best else os.environ.get("LITELLM_MODEL", "openrouter/openai/gpt-4o-mini")
+        except Exception:
+            model = os.environ.get("LITELLM_MODEL", "openrouter/openai/gpt-4o-mini")
     log(f"Using LiteLLM model: {model}")
     max_tokens = int(os.environ.get("LITELLM_MAX_TOKENS", max_tokens))
 
