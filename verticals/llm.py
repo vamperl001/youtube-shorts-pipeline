@@ -109,9 +109,9 @@ def _openrouter_key() -> str:
 
 def _openrouter_fallbacks() -> list:
     """Failover chain: BEZAHLT zuerst, Free-Modelle nur als letzte Reserve.
-    (User-Entscheidung 15.09.: lieber ~2ct/Video als trunkierte Drafts.)"""
+    (User-Entscheidung 15.09.: lieber ~2ct/Video als trunkierte Drafts, 22.09. paid auf gpt-4o-mini gepinnt weil qwen 3.5 empty)."""
     _openrouter_key()
-    paid = os.environ.get("PAID_FALLBACK", "openrouter/qwen/qwen3.5-9b")
+    paid = os.environ.get("PAID_FALLBACK", "openrouter/openai/gpt-4o-mini")
     fb = os.environ.get("FALLBACK_MODELS", "")
     if fb:
         try:

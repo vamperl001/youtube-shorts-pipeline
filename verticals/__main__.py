@@ -454,6 +454,86 @@ def cmd_prune(args):
         if d:
             print(f"  {k}: {len(d)} gelöscht")
 
+def cmd_editorial(args):
+    """Editorial selection: LL M wählt 3-5 Stories aus Pool (Phase 3)."""
+    import json
+    from pathlib import Path
+    from datetime import datetime, timezone
+    from .config import RUNS_DIR
+    from .editorial import select_editorial
+
+    # resolve run_dir: explicit or latest
+    run_dir = getattr(args, "run_dir", None)
+    if run_dir:
+        run_dir = Path(run_dir)
+    else:
+        # latest in RUNS_DIR (or --out override)
+        base = Path(getattr(args, "out", None)) if getattr(args, "out", None) else RUNS_DIR
+        if args.niche:
+            # prefer niche-specific latest: filter by name containing niche
+            candidates = sorted(base.glob(f"*_{args.niche}_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not candidates:
+                candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        else:
+            candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            print(f"  Kein Run gefunden in {base} — erst ingest ausführen")
+            sys.exit(1)
+        run_dir = candidates[0]
+
+    if not (run_dir / "articles.json").exists():
+        print(f"  articles.json fehlt in {run_dir}")
+        sys.exit(1)
+
+    articles = json.loads((run_dir / "articles.json").read_text())
+    community = []
+    comm_path = run_dir / "community.json"
+    if comm_path.exists():
+        try:
+            comm_data = json.loads(comm_path.read_text())
+            community = comm_data.get("signals", [])
+        except Exception:
+            community = []
+    # allow override via args.with_reddit? always use stored community
+    edition = getattr(args, "edition", None)
+    if not edition:
+        # use run's started_at or today
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+            edition = meta.get("created_at", "")[:10]
+        except Exception:
+            edition = None
+        if not edition or not edition.startswith("20"):
+            edition = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    provider = getattr(args, "provider", None)
+    print(f"\n  Editorial für {run_dir.name} — {len(articles)} Artikel, {len(community)} Reddit-Signale, Edition {edition}, Provider {provider or 'auto'}")
+    result = select_editorial(articles, community, edition=edition, provider=provider)
+
+    # QC: validate already done in select_editorial, but save QC info
+    qc_ok = "_fallback" not in result
+    # persist
+    out_path = run_dir / "editorial.json"
+    # also save raw for debugging
+    to_save = dict(result)
+    # keep _llm_raw truncated; also save metrics
+    to_save["_meta"] = {
+        "run_dir": str(run_dir),
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "provider": provider or "auto",
+        "articles_count": len(articles),
+        "community_count": len(community),
+        "qc_pass": qc_ok,
+    }
+    out_path.write_text(json.dumps(to_save, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"  Editorial → {out_path} ({len(result['stories'])} stories, qc={'pass' if qc_ok else 'fallback'})")
+    for s in result["stories"]:
+        print(f"    {s['story_id']}: [{s['status']}] {s['importance']:.2f} {s['headline'][:70]}  sources={','.join(s['sources'])}")
+        print(f"      → {s['reason'][:100]}")
+    if not qc_ok:
+        print(f"  WARN: Fallback verwendet ({result.get('_error','')})")
+    return out_path
+
 def cmd_ingest(args):
     """RSS (+Reddit Phase2) → normalized articles → runs/<ts>/ persistence."""
     import json
@@ -726,6 +806,14 @@ def main():
     p_ingest.add_argument("--with-reddit", action="store_true", help="Reddit-Signal miterfassen (Phase 2, non-blocking)")
     p_ingest.add_argument("--reddit-limit", type=int, default=10, help="Max Reddit-Signale je Run (default 10)")
 
+    # editorial (Phase 3)
+    p_editorial = sub.add_parser("editorial", help="Phase 3: Editorial 3-5 Stories aus Pool (LLM)")
+    p_editorial.add_argument("--run-dir", default=None, help="Run-Verzeichnis (default: neuester in ~/.verticals/runs)")
+    p_editorial.add_argument("--niche", default=None, help="Niche für latest-Fallback (default auto)")
+    p_editorial.add_argument("--out", default=None, help="Runs-Basis dir (default ~/.verticals/runs)")
+    p_editorial.add_argument("--edition", default=None, help="Edition Datum YYYY-MM-DD (default heute)")
+    p_editorial.add_argument("--provider", default=None, help="LLM: gemini, openai, claude, ollama (default auto)")
+
     # prune
     p_prune = sub.add_parser("prune", help="Cleanup: work dirs nach Upload + alte media")
     p_prune.add_argument("--work-dir", default=None, help="Einzelnes work_* Verzeichnis nach Upload löschen")
@@ -752,6 +840,9 @@ def main():
         return
     if args.cmd == "prune":
         cmd_prune(args)
+        return
+    if args.cmd == "editorial":
+        cmd_editorial(args)
         return
 
     maybe_run_setup(args)
@@ -798,6 +889,8 @@ def main():
         cmd_ingest(args)
     elif args.cmd == "prune":
         cmd_prune(args)
+    elif args.cmd == "editorial":
+        cmd_editorial(args)
 
 
 if __name__ == "__main__":

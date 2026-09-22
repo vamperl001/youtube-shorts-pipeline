@@ -29,7 +29,7 @@ export GEMINI_MAX_TOKENS=8192
 # Fallback-Kette (llm.py): Gemini direkt -> PAID zuerst -> Free-Reserve.
 # Paid-Default verifiziert (15.09., antwortet, ~0.005ct/Draft); altes
 # google/gemini-2.0-flash-001 ist bei OpenRouter retired (404).
-export PAID_FALLBACK="${PAID_FALLBACK:-openrouter/qwen/qwen3.5-9b}"
+export PAID_FALLBACK="${PAID_FALLBACK:-openrouter/openai/gpt-4o-mini}"
 # Kein Hardcode - llm.py holt freie Modelle dynamisch via /api/v1/models, Fallback via env FALLBACK_MODELS / PAID_FALLBACK
 # Optional setzen: export FALLBACK_MODELS='["openrouter/free"]'
 unset LITELLM_MODEL 2>/dev/null || true
