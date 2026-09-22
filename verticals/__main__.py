@@ -248,6 +248,20 @@ def cmd_upload(args):
     draft[f"youtube_url_{lang}"] = url
     state.save(draft_path)
     print(f"\n  Live: {url}")
+    # prune work dir nach erfolgreichem Upload (ponytail: sofort, nicht 7d pöbeln)
+    if url and "youtu.be" in url:
+        try:
+            job_id = draft.get("job_id", "")
+            if job_id:
+                from .cleanup import prune_after_upload
+                work_dir = MEDIA_DIR / f"work_{job_id}_{lang}"
+                prune_after_upload(work_dir)
+                # _en_en variant
+                alt = MEDIA_DIR / f"work_{job_id}_{lang}_en"
+                if alt.exists():
+                    prune_after_upload(alt)
+        except Exception as e:
+            log(f"Prune nach Upload übersprungen: {e}")
     return url
 
 
@@ -424,14 +438,31 @@ def cmd_niches(args):
             print(f"    {' ':20s}  {desc}")
 
 
+def cmd_prune(args):
+    """Prune old work/media/exchange files (nach Upload + 7d/14d)."""
+    from .cleanup import prune_all, prune_after_upload
+    import argparse
+    if getattr(args, "work_dir", None):
+        # single work dir after upload
+        ok = prune_after_upload(Path(args.work_dir), dry_run=getattr(args, "dry_run", False))
+        sys.exit(0 if ok else 1)
+    # full prune
+    res = prune_all(dry_run=getattr(args, "dry_run", False))
+    print(f"\n  Prune {'(dry)' if args.dry_run else ''}: {res['total_freed_mb']:.1f} MB frei")
+    for k in ("work", "media", "exchange"):
+        d = res[k]["deleted"]
+        if d:
+            print(f"  {k}: {len(d)} gelöscht")
+
 def cmd_ingest(args):
-    """RSS ingestion → normalized articles → runs/<ts>/ persistence."""
+    """RSS (+Reddit Phase2) → normalized articles → runs/<ts>/ persistence."""
     import json
     from pathlib import Path
     from .config import RUNS_DIR
     from .ingest.rss import fetch_all_feeds
+    from .ingest.reddit import fetch_reddit_signals
     from .ingest.normalize import dedup_articles
-    from .ingest.store import create_run_dir, save_articles, save_sources, replay_from_raw
+    from .ingest.store import create_run_dir, save_articles, save_sources, save_community, replay_from_raw
 
     # --replay mode (offline, no network)
     if getattr(args, "replay", None):
@@ -439,10 +470,8 @@ def cmd_ingest(args):
         if not replay_dir.exists():
             print(f"  Replay dir not found: {replay_dir}")
             sys.exit(1)
-        # replay_from_raw reads raw/*.xml + sources.json
         try:
             articles = replay_from_raw(replay_dir)
-            # dedup + limit (limit None → use original stored limit)
             articles = dedup_articles(articles)
             limit = getattr(args, "limit", None)
             if limit is None:
@@ -456,7 +485,14 @@ def cmd_ingest(args):
             print(f"  Re-parsed {len(articles)} articles (offline, limit {limit})")
             for i, a in enumerate(articles[:5], 1):
                 print(f"  {i}. [{a['source']}] {a['title'][:80]}")
-            # Optionally save to new run for inspection
+            # also replay community if exists
+            comm_path = replay_dir / "community.json"
+            if comm_path.exists():
+                try:
+                    comm = json.loads(comm_path.read_text())
+                    print(f"  Community: {len(comm.get('signals', []))} signals (reddit_success={comm.get('reddit_success')})")
+                except Exception:
+                    pass
             if getattr(args, "out", None):
                 out_dir = Path(args.out)
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -465,6 +501,7 @@ def cmd_ingest(args):
             return replay_dir
         except Exception as e:
             print(f"  Replay failed: {e}")
+            import traceback; traceback.print_exc()
             sys.exit(1)
 
     niche = getattr(args, "niche", "apple") or "apple"
@@ -472,6 +509,8 @@ def cmd_ingest(args):
     if limit is None:
         limit = 20
     runs_dir = Path(getattr(args, "out", None)) if getattr(args, "out", None) else RUNS_DIR
+    with_reddit = bool(getattr(args, "with_reddit", False))
+    reddit_limit = getattr(args, "reddit_limit", 10) or 10
 
     from .niche import load_niche, get_discovery_config
     profile = load_niche(niche)
@@ -481,17 +520,19 @@ def cmd_ingest(args):
         print(f"  No RSS feeds in niche '{niche}' (niches/{niche}.yaml discovery.rss)")
         sys.exit(1)
 
-    print(f"\n  Ingesting [{niche}] — {len(feeds)} feeds, limit {limit}")
+    print(f"\n  Ingesting [{niche}] — {len(feeds)} feeds, limit {limit}" + (" + Reddit" if with_reddit else ""))
     for f in feeds:
         print(f"    • {f}")
+    if with_reddit:
+        reddit_subs = discovery.get("reddit") or []
+        if reddit_subs:
+            print(f"  Reddit: {', '.join(reddit_subs)} (limit {reddit_limit}, non-blocking)")
 
-    # create run dir early so raw files are persisted per feed
     run_dir = create_run_dir(runs_dir, niche)
     print(f"\n  Run dir: {run_dir}")
 
     feed_results = fetch_all_feeds(feeds, limit=limit, run_dir=run_dir)
 
-    # print per-feed status
     for r in feed_results:
         status = r.get("status")
         mark = {"ok": "✓", "error": "✗", "empty": "○"}.get(status, "?")
@@ -502,19 +543,49 @@ def cmd_ingest(args):
         all_articles.extend(fr.get("articles", []))
     kept_before = len(all_articles)
     deduped = dedup_articles(all_articles)
-    # newest first, then limit
     deduped = sorted(deduped, key=lambda a: a.get("published_at") or "", reverse=True)[:limit]
 
     save_articles(run_dir, deduped)
     save_sources(run_dir, feed_results, niche=niche, limit=limit)
 
+    # Reddit optional Phase 2
+    reddit_results = []
+    community_signals = []
+    if with_reddit:
+        reddit_subs = discovery.get("reddit") or []
+        if not reddit_subs and niche == "apple":
+            reddit_subs = ["apple", "iphone"]
+        if reddit_subs:
+            print(f"\n  Reddit ingest ({len(reddit_subs)} subs)...")
+            reddit_results = fetch_reddit_signals(reddit_subs, reddit_limit=reddit_limit, run_dir=run_dir)
+            for r in reddit_results:
+                community_signals.extend(r.get("signals", []))
+                status = r.get("status")
+                mark = {"ok": "✓", "rate_limited": "◷", "error": "✗", "empty": "○"}.get(status, "?")
+                print(f"  [{mark}] r/{r.get('subreddit'):15} {r.get('signals_fetched'):2} signals  status={status}" + (f"  {r.get('error')}" if r.get("error") else ""))
+            # global trim
+            community_signals = sorted(community_signals, key=lambda s: s.get("published_at") or "", reverse=True)[:reddit_limit]
+            save_community(run_dir, reddit_results, community_signals, niche=niche)
+            print(f"  Community: {len(community_signals)} signals kept (limit {reddit_limit})")
+        else:
+            save_community(run_dir, [], [], niche=niche)
+            print("  Reddit: keine Subreddits konfiguriert — skip")
+    else:
+        # ensure empty community.json for consistency if not with_reddit? ponytail: skip, only when flag
+        pass
+
     print(f"\n  Articles: {kept_before} kept → {len(deduped)} deduped (limit {limit})")
     print(f"  Sources: {run_dir / 'sources.json'}")
     print(f"  Articles: {run_dir / 'articles.json'}")
+    if with_reddit:
+        print(f"  Community: {run_dir / 'community.json'} ({len(community_signals)} signals)")
     print(f"  Raw: {run_dir / 'raw'} ({len(list((run_dir / 'raw').glob('*.xml')))} files)")
-    # quick preview
     for i, a in enumerate(deduped[:5], 1):
         print(f"  {i}. [{a['source']}] {a['title'][:80]}  {a.get('published_at','')}")
+    if community_signals:
+        print("  Reddit top:")
+        for i, s in enumerate(community_signals[:3], 1):
+            print(f"    {i}. [r/{s['subreddit']}] {s['title'][:70]}")
     return run_dir
 
 
@@ -646,12 +717,19 @@ def main():
     p_daily.add_argument("--lang", default="en", help="Language code")
     p_daily.add_argument("--niche", default="selfhosting", help="Niche profile")
 
-    # ingest (Phase 1)
-    p_ingest = sub.add_parser("ingest", help="Phase 1: RSS ingestion → runs/<ts>/articles.json")
+    # ingest (Phase 1+2)
+    p_ingest = sub.add_parser("ingest", help="Phase 1-2: RSS (+Reddit) → runs/<ts>/articles.json")
     p_ingest.add_argument("--niche", default="apple", help=niche_help)
     p_ingest.add_argument("--limit", type=int, default=None, help="Max articles after dedup (default 20, replay uses stored limit)")
     p_ingest.add_argument("--out", default=None, help="Runs dir override (default ~/.verticals/runs)")
     p_ingest.add_argument("--replay", default=None, help="Offline replay from existing run dir (no network)")
+    p_ingest.add_argument("--with-reddit", action="store_true", help="Reddit-Signal miterfassen (Phase 2, non-blocking)")
+    p_ingest.add_argument("--reddit-limit", type=int, default=10, help="Max Reddit-Signale je Run (default 10)")
+
+    # prune
+    p_prune = sub.add_parser("prune", help="Cleanup: work dirs nach Upload + alte media")
+    p_prune.add_argument("--work-dir", default=None, help="Einzelnes work_* Verzeichnis nach Upload löschen")
+    p_prune.add_argument("--dry-run", action="store_true", help="Nur anzeigen, nicht löschen")
 
     args = parser.parse_args()
 
@@ -670,8 +748,10 @@ def main():
         cmd_voices(args)
         return
     if args.cmd == "ingest":
-        # ingest is deterministic file I/O + network, no API keys needed
         cmd_ingest(args)
+        return
+    if args.cmd == "prune":
+        cmd_prune(args)
         return
 
     maybe_run_setup(args)
@@ -716,6 +796,8 @@ def main():
         cmd_daily(args)
     elif args.cmd == "ingest":
         cmd_ingest(args)
+    elif args.cmd == "prune":
+        cmd_prune(args)
 
 
 if __name__ == "__main__":

@@ -26,5 +26,6 @@ discovery:
     - "https://feeds.macrumors.com/MacRumors-All"
     - "https://9to5mac.com/feed/"
     - "https://appleinsider.com/rss/news/"
-    - "https://www.cultofmac.com/feed/"  # ponytail: 4 Apple feeds = 8 Topics (2/Fee), iMore/Apple Newsroom optional
-  reddit: []
+    - "https://www.cultofmac.com/feed/"  # ponytail: 4 Apple feeds, Newsroom ab Phase 3
+  reddit: ["apple", "iphone"]  # Phase 2: optional community signal, non-blocking (429 tolerant)
+  # reddit_limit: 10  # optional, default 10

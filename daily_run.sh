@@ -145,3 +145,18 @@ if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
         -d parse_mode="HTML" \
         -d text="📹 <b>Daily Video $DATE</b>%0A${DEST##*/}%0A${YOUTUBE_URL:-kein YT-Upload}" >/dev/null 2>&1 || true
 fi
+
+# 8. Cleanup nach erfolgreichem Upload (ponytail: work nach Upload + 7d/14d Rotation)
+if [[ "$YOUTUBE_URL" == https://youtu.be* ]]; then
+    # sofort work dir dieses Runs löschen (spart 15-30 MB je Run)
+    if [ -n "${WORKDIR_MEDIA:-}" ] && [ -d "$WORKDIR_MEDIA" ]; then
+        rm -rf "$WORKDIR_MEDIA" 2>/dev/null && echo "Prune: work gelöscht $WORKDIR_MEDIA" >> "$LOG" || true
+        # _en variant
+        ALT="${WORKDIR_MEDIA}_en"
+        [ -d "$ALT" ] && rm -rf "$ALT" 2>/dev/null && echo "Prune: work gelöscht $ALT" >> "$LOG" || true
+    fi
+fi
+# wöchentliche Rotation: work>7d (keep 5 newest), daily_final>14d, verticals>7d, exchange Duplikate
+if command -v python3 >/dev/null; then
+    cd "$WORKDIR" && "$VENV/python3" -m verticals prune 2>&1 | tee -a "$LOG" || true
+fi

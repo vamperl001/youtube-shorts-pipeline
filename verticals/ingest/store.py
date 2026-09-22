@@ -37,10 +37,7 @@ def save_sources(run_dir: Path, feed_results: list[dict], niche: str, limit: int
     finished_at = datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
     total_fetched = sum(r.get("entries_fetched", 0) for r in feed_results)
     total_kept = sum(r.get("entries_kept", 0) for r in feed_results)
-    # distinct articles after dedup will be less; we report kept before dedup here,
-    # caller can compute post-dedup if needed. For Phase 1 we include both.
 
-    # Build per-feed entry without raw_bytes (too large)
     feeds = []
     for r in feed_results:
         feeds.append({
@@ -76,15 +73,78 @@ def save_sources(run_dir: Path, feed_results: list[dict], niche: str, limit: int
     out.write_text(json.dumps(sources, indent=2, ensure_ascii=False), encoding="utf-8")
     log(f"Saved sources → {out}")
 
-    # meta.json
-    meta = {
+    # update meta.json (preserve reddit info if already exists)
+    meta_path = run_dir / "meta.json"
+    meta = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+        except Exception:
+            meta = {}
+    meta.update({
         "niche": niche,
         "run_dir": str(run_dir),
         "created_at": finished_at,
         "feeds": [r.get("feed_url") for r in feed_results],
         "limit": limit,
+    })
+    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def save_community(run_dir: Path, reddit_results: list[dict], signals: list[dict], niche: str):
+    """Save Reddit community signals (Phase 2)."""
+    run_dir = Path(run_dir)
+    fetched_at = datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
+    # per-subreddit metrics
+    subs = []
+    for r in reddit_results:
+        subs.append({
+            "subreddit": r.get("subreddit"),
+            "feed_url": r.get("feed_url"),
+            "status": r.get("status"),
+            "http_status": r.get("http_status"),
+            "bozo": r.get("bozo"),
+            "error": r.get("error"),
+            "fetched_at": r.get("fetched_at"),
+            "duration_ms": r.get("duration_ms"),
+            "raw_hash": r.get("raw_hash"),
+            "raw_path": r.get("raw_path"),
+            "signals_fetched": r.get("signals_fetched"),
+        })
+    metrics = {
+        "total_subreddits": len(reddit_results),
+        "subreddits_ok": sum(1 for r in reddit_results if r.get("status") == "ok"),
+        "subreddits_error": sum(1 for r in reddit_results if r.get("status") in ("error", "rate_limited")),
+        "subreddits_empty": sum(1 for r in reddit_results if r.get("status") == "empty"),
+        "subreddits_rate_limited": sum(1 for r in reddit_results if r.get("status") == "rate_limited"),
+        "signals_total": len(signals),
+        "reddit_success": any(r.get("status") == "ok" for r in reddit_results),
+        "reddit_failure": all(r.get("status") != "ok" for r in reddit_results) if reddit_results else False,
     }
-    (run_dir / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    community = {
+        "niche": niche,
+        "fetched_at": fetched_at,
+        "reddit": {
+            "metrics": metrics,
+            "subreddits": subs,
+        },
+        "signals": signals,
+        # convenience flat metrics for observability
+        "reddit_success": metrics["reddit_success"],
+        "reddit_failure": metrics["reddit_failure"],
+        "signals_count": len(signals),
+    }
+    out = run_dir / "community.json"
+    out.write_text(json.dumps(community, indent=2, ensure_ascii=False), encoding="utf-8")
+    log(f"Saved community → {out} ({len(signals)} signals, ok={metrics['subreddits_ok']}/{metrics['total_subreddits']})")
+    # also patch meta.json with reddit info
+    meta_path = run_dir / "meta.json"
+    try:
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        meta["reddit"] = metrics
+        meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def save_raw(run_dir: Path, feed_url: str, raw_bytes: bytes):
