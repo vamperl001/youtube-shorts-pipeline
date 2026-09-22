@@ -12,6 +12,7 @@ youtube_token.json
 drafts/
 media/
 logs/
+runs/
 
 # Python
 __pycache__/

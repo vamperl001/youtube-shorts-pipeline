@@ -14,6 +14,7 @@ SKILL_DIR = Path.home() / ".verticals"
 DRAFTS_DIR = SKILL_DIR / "drafts"
 MEDIA_DIR = SKILL_DIR / "media"
 LOGS_DIR = SKILL_DIR / "logs"
+RUNS_DIR = SKILL_DIR / "runs"
 CONFIG_FILE = SKILL_DIR / "config.json"
 
 # ─────────────────────────────────────────────────────

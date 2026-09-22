@@ -283,6 +283,51 @@ def cmd_daily(args):
              "ssh","git","cli","terminal","open","source","foss","privacy",
              "security","encrypt","password","bitwarden","podman","lxc"}
     ranked = sorted(candidates, key=lambda c: any(w in c.title.lower() for w in hs_kw), reverse=True)
+    # Deduplizierung: Topics der letzten 7 Tage nicht wiederholen
+    # (verhindert "Ex-FTC..." an zwei Tagen hintereinander + Endlosschleife
+    # auf demselben RSS-Artikel, wenn der Draft einmal abraucht).
+    try:
+        import re as _re
+        recent_titles: list[str] = []
+        for _p in sorted(DRAFTS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:14]:
+            try:
+                _d = json.loads(_p.read_text())
+                for _k in ("news", "youtube_title"):
+                    if _d.get(_k):
+                        recent_titles.append(str(_d[_k]))
+            except Exception:
+                continue
+
+        def _words(t: str) -> set[str]:
+            return set(w for w in _re.findall(r"[a-z0-9]{4,}", t.lower()) if w not in hs_kw) or set(
+                _re.findall(r"[a-z0-9]{4,}", t.lower())
+            )
+
+        def _is_repeat(title: str) -> bool:
+            tw = _words(title)
+            if not tw:
+                return False
+            for rt in recent_titles:
+                rw = _words(rt)
+                if not rw:
+                    continue
+                # identisch oder starke Wortueberlappung => Wiederholung
+                if title.strip().lower() == rt.strip().lower():
+                    return True
+                inter = len(tw & rw) / max(len(tw | rw), 1)
+                if inter > 0.5:
+                    return True
+            return False
+
+        fresh = [c for c in ranked if not _is_repeat(c.title)]
+        if fresh:
+            if len(fresh) < len(ranked):
+                log(f"Dedup: {len(ranked) - len(fresh)} wiederholte Topics uebersprungen")
+            ranked = fresh
+        else:
+            log("Dedup: alle Kandidaten bereits kuerzlich verwendet — nutze trotzdem neuestes")
+    except Exception as e:
+        log(f"Dedup übersprungen: {e}")
     best = ranked[0]
     topic = best.title
     log(f"Selected: {topic} (Quelle: {best.source}, URL: {best.url or 'keine'})")
@@ -377,6 +422,100 @@ def cmd_niches(args):
         print(f"    {n:20s}  {display}")
         if desc:
             print(f"    {' ':20s}  {desc}")
+
+
+def cmd_ingest(args):
+    """RSS ingestion → normalized articles → runs/<ts>/ persistence."""
+    import json
+    from pathlib import Path
+    from .config import RUNS_DIR
+    from .ingest.rss import fetch_all_feeds
+    from .ingest.normalize import dedup_articles
+    from .ingest.store import create_run_dir, save_articles, save_sources, replay_from_raw
+
+    # --replay mode (offline, no network)
+    if getattr(args, "replay", None):
+        replay_dir = Path(args.replay)
+        if not replay_dir.exists():
+            print(f"  Replay dir not found: {replay_dir}")
+            sys.exit(1)
+        # replay_from_raw reads raw/*.xml + sources.json
+        try:
+            articles = replay_from_raw(replay_dir)
+            # dedup + limit (limit None → use original stored limit)
+            articles = dedup_articles(articles)
+            limit = getattr(args, "limit", None)
+            if limit is None:
+                try:
+                    src = json.loads((replay_dir / "sources.json").read_text())
+                    limit = int(src.get("limit", 20))
+                except Exception:
+                    limit = 20
+            articles = sorted(articles, key=lambda a: a.get("published_at") or "", reverse=True)[:limit]
+            print(f"\n  Replay from {replay_dir}")
+            print(f"  Re-parsed {len(articles)} articles (offline, limit {limit})")
+            for i, a in enumerate(articles[:5], 1):
+                print(f"  {i}. [{a['source']}] {a['title'][:80]}")
+            # Optionally save to new run for inspection
+            if getattr(args, "out", None):
+                out_dir = Path(args.out)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                (out_dir / "articles.json").write_text(json.dumps(articles, indent=2, ensure_ascii=False), encoding="utf-8")
+                print(f"  Saved to {out_dir / 'articles.json'}")
+            return replay_dir
+        except Exception as e:
+            print(f"  Replay failed: {e}")
+            sys.exit(1)
+
+    niche = getattr(args, "niche", "apple") or "apple"
+    limit = getattr(args, "limit", None)
+    if limit is None:
+        limit = 20
+    runs_dir = Path(getattr(args, "out", None)) if getattr(args, "out", None) else RUNS_DIR
+
+    from .niche import load_niche, get_discovery_config
+    profile = load_niche(niche)
+    discovery = get_discovery_config(profile)
+    feeds = discovery.get("rss") or []
+    if not feeds:
+        print(f"  No RSS feeds in niche '{niche}' (niches/{niche}.yaml discovery.rss)")
+        sys.exit(1)
+
+    print(f"\n  Ingesting [{niche}] — {len(feeds)} feeds, limit {limit}")
+    for f in feeds:
+        print(f"    • {f}")
+
+    # create run dir early so raw files are persisted per feed
+    run_dir = create_run_dir(runs_dir, niche)
+    print(f"\n  Run dir: {run_dir}")
+
+    feed_results = fetch_all_feeds(feeds, limit=limit, run_dir=run_dir)
+
+    # print per-feed status
+    for r in feed_results:
+        status = r.get("status")
+        mark = {"ok": "✓", "error": "✗", "empty": "○"}.get(status, "?")
+        print(f"  [{mark}] {r.get('feed_url')[:60]:60}  {r.get('entries_fetched'):2} fetched → {r.get('entries_kept'):2} kept  ({r.get('duration_ms')}ms)  status={status}" + (f"  error={r.get('error')}" if r.get("error") else ""))
+
+    all_articles = []
+    for fr in feed_results:
+        all_articles.extend(fr.get("articles", []))
+    kept_before = len(all_articles)
+    deduped = dedup_articles(all_articles)
+    # newest first, then limit
+    deduped = sorted(deduped, key=lambda a: a.get("published_at") or "", reverse=True)[:limit]
+
+    save_articles(run_dir, deduped)
+    save_sources(run_dir, feed_results, niche=niche, limit=limit)
+
+    print(f"\n  Articles: {kept_before} kept → {len(deduped)} deduped (limit {limit})")
+    print(f"  Sources: {run_dir / 'sources.json'}")
+    print(f"  Articles: {run_dir / 'articles.json'}")
+    print(f"  Raw: {run_dir / 'raw'} ({len(list((run_dir / 'raw').glob('*.xml')))} files)")
+    # quick preview
+    for i, a in enumerate(deduped[:5], 1):
+        print(f"  {i}. [{a['source']}] {a['title'][:80]}  {a.get('published_at','')}")
+    return run_dir
 
 
 def cmd_voices(args):
@@ -507,6 +646,13 @@ def main():
     p_daily.add_argument("--lang", default="en", help="Language code")
     p_daily.add_argument("--niche", default="selfhosting", help="Niche profile")
 
+    # ingest (Phase 1)
+    p_ingest = sub.add_parser("ingest", help="Phase 1: RSS ingestion → runs/<ts>/articles.json")
+    p_ingest.add_argument("--niche", default="apple", help=niche_help)
+    p_ingest.add_argument("--limit", type=int, default=None, help="Max articles after dedup (default 20, replay uses stored limit)")
+    p_ingest.add_argument("--out", default=None, help="Runs dir override (default ~/.verticals/runs)")
+    p_ingest.add_argument("--replay", default=None, help="Offline replay from existing run dir (no network)")
+
     args = parser.parse_args()
 
     if args.verbose:
@@ -522,6 +668,10 @@ def main():
         return
     if args.cmd == "voices":
         cmd_voices(args)
+        return
+    if args.cmd == "ingest":
+        # ingest is deterministic file I/O + network, no API keys needed
+        cmd_ingest(args)
         return
 
     maybe_run_setup(args)
@@ -564,6 +714,8 @@ def main():
         cmd_topics(args)
     elif args.cmd == "daily":
         cmd_daily(args)
+    elif args.cmd == "ingest":
+        cmd_ingest(args)
 
 
 if __name__ == "__main__":
