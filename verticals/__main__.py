@@ -602,6 +602,72 @@ def cmd_script(args):
         print(f"  WARN: Fallback ({result.get('_error','')})")
     return out_path
 
+def cmd_visual(args):
+    """Visual Plan: Shotlist ohne URLs (Phase 5)."""
+    import json
+    from pathlib import Path
+    from datetime import datetime, timezone
+    from .config import RUNS_DIR
+    from .visual import generate_visual_plan
+
+    run_dir = getattr(args, "run_dir", None)
+    if run_dir:
+        run_dir = Path(run_dir)
+    else:
+        base = Path(getattr(args, "out", None)) if getattr(args, "out", None) else RUNS_DIR
+        if args.niche:
+            candidates = sorted(base.glob(f"*_{args.niche}_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not candidates:
+                candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        else:
+            candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            print(f"  Kein Run gefunden in {base} — erst ingest+editorial+script")
+            sys.exit(1)
+        run_dir = candidates[0]
+
+    if not (run_dir / "script.json").exists():
+        print(f"  script.json fehlt in {run_dir} — erst script ausführen")
+        sys.exit(1)
+    if not (run_dir / "editorial.json").exists():
+        print(f"  editorial.json fehlt in {run_dir}")
+        sys.exit(1)
+
+    script = json.loads((run_dir / "script.json").read_text())
+    editorial = json.loads((run_dir / "editorial.json").read_text())
+    script_clean = {k: v for k, v in script.items() if not k.startswith("_")}
+    editorial_clean = {k: v for k, v in editorial.items() if not k.startswith("_")}
+    niche = getattr(args, "niche", None) or script.get("_meta", {}).get("niche") or "apple"
+    if not niche or niche == "general":
+        parts = run_dir.name.split("_")
+        if len(parts) >= 3:
+            niche = parts[-2] if parts[-2] in ["apple", "general", "tech", "selfhosting"] else "apple"
+    provider = getattr(args, "provider", None)
+    print(f"\n  Visual für {run_dir.name} — {len(script_clean.get('stories',[]))} Stories, Niche {niche}, Provider {provider or 'auto'}")
+    result = generate_visual_plan(script_clean, editorial_clean, edition=script_clean.get("edition"), niche=niche, provider=provider)
+    qc_ok = "_fallback" not in result
+    out_path = run_dir / "shots.json"
+    # also alias visual.json for spec
+    to_save = dict(result)
+    to_save["_meta"] = {
+        "run_dir": str(run_dir),
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "provider": provider or "auto",
+        "niche": niche,
+        "qc_pass": qc_ok,
+        "shots_count": len(result.get("shots", [])),
+    }
+    out_path.write_text(json.dumps(to_save, indent=2, ensure_ascii=False), encoding="utf-8")
+    # alias
+    (run_dir / "visual.json").write_text(json.dumps(to_save, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"  Visual → {out_path} ({len(result.get('shots',[]))} shots, qc={'pass' if qc_ok else 'fallback'})")
+    for sh in result.get("shots", []):
+        print(f"    {sh['idx']:2}: [{sh['story_id']}] {sh['duration']}s {sh['subject'][:30]:30} {sh['asset_type']:22} {sh['preferred_source']}")
+        print(f"         → {sh['description'][:80]}")
+    if not qc_ok:
+        print(f"  WARN: Fallback ({result.get('_error','')})")
+    return out_path
+
 def cmd_ingest(args):
     """RSS (+Reddit Phase2) → normalized articles → runs/<ts>/ persistence."""
     import json
@@ -889,6 +955,13 @@ def main():
     p_script.add_argument("--out", default=None, help="Runs-Basis dir (default ~/.verticals/runs)")
     p_script.add_argument("--provider", default=None, help="LLM: gemini, openai, claude, ollama (default auto)")
 
+    # visual (Phase 5)
+    p_visual = sub.add_parser("visual", help="Phase 5: Visual Plan Shotlist ohne URLs (LLM)")
+    p_visual.add_argument("--run-dir", default=None, help="Run-Verzeichnis (default: neuester in ~/.verticals/runs)")
+    p_visual.add_argument("--niche", default=None, help="Niche für Style (default aus Run)")
+    p_visual.add_argument("--out", default=None, help="Runs-Basis dir (default ~/.verticals/runs)")
+    p_visual.add_argument("--provider", default=None, help="LLM: gemini, openai, claude, ollama (default auto)")
+
     # prune
     p_prune = sub.add_parser("prune", help="Cleanup: work dirs nach Upload + alte media")
     p_prune.add_argument("--work-dir", default=None, help="Einzelnes work_* Verzeichnis nach Upload löschen")
@@ -921,6 +994,9 @@ def main():
         return
     if args.cmd == "script":
         cmd_script(args)
+        return
+    if args.cmd == "visual":
+        cmd_visual(args)
         return
 
     maybe_run_setup(args)
@@ -971,6 +1047,8 @@ def main():
         cmd_editorial(args)
     elif args.cmd == "script":
         cmd_script(args)
+    elif args.cmd == "visual":
+        cmd_visual(args)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ CACHE_TTL = 3600  # 1h
 
 # Blocklist: Modelle die via litellm/openrouter aktuell 404/empty liefern (22.09. beobachtet)
 # ponytail: dynamisch, aber harte Fails blocken um Latency zu sparen — wird via Fetch aktualisiert, nicht Hardcode-Pin
-BLOCKLIST_SUBSTR = ["gpt-oss-120b", "qwen3-30b-a3b", "qwen3-14b"]  # 22.09. empty
+BLOCKLIST_SUBSTR = ["gpt-oss-120b", "qwen3-30b-a3b", "qwen3-14b", "gemini-2.5-flash-lite"]  # 22.09. empty/404
 
 # Offline-Fallback: letzter Cache, nicht Hardcode (ponytail: Cache statt Pin)
 # Kein Single-Pin — wird aus letztem erfolgreichen Fetch gespeist
