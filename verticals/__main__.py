@@ -710,6 +710,48 @@ def cmd_tts(args):
     print(f"  TTS → {run_dir / tts_meta['file_path']} ({tts_meta['duration']}s, {tts_meta['word_count']} Worte, voice {tts_meta.get('voice_id','')})")
     return run_dir / tts_meta["file_path"]
 
+def cmd_render(args):
+    """Render Phase 8: assets + voiceover -> final.mp4."""
+    import json
+    from pathlib import Path
+    from .config import RUNS_DIR
+    from .render import render_video, save_render
+
+    run_dir = getattr(args, "run_dir", None)
+    if run_dir:
+        run_dir = Path(run_dir)
+    else:
+        base = Path(getattr(args, "out", None)) if getattr(args, "out", None) else RUNS_DIR
+        if args.niche:
+            candidates = sorted(base.glob(f"*_{args.niche}_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not candidates:
+                candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        else:
+            candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            print(f"  Kein Run gefunden in {base}")
+            sys.exit(1)
+        run_dir = candidates[0]
+
+    # check required files
+    for f in ["shots.json", "assets.json", "voiceover.mp3", "script.json"]:
+        alt = run_dir / f
+        if f == "shots.json" and not alt.exists():
+            alt = run_dir / "visual.json"
+        if not alt.exists() and f != "voiceover.mp3":
+            # voiceover may be voiceover_en.mp3
+            if f == "voiceover.mp3" and (run_dir / "voiceover_en.mp3").exists():
+                continue
+            print(f"  {f} fehlt in {run_dir} — vorherige Phasen ausführen")
+            sys.exit(1)
+
+    lang = getattr(args, "lang", "en") or "en"
+    print(f"\n  Render für {run_dir.name} — {lang}")
+    meta = render_video(run_dir, lang=lang)
+    save_render(run_dir, meta)
+    print(f"  Render → {run_dir / meta['final_path']} ({meta['duration']}s, {meta['shots']} shots, captions={'ja' if meta['has_captions'] else 'nein'})")
+    return run_dir / meta["final_path"]
+
 def cmd_asset(args):
     """Asset Resolver Phase 6: shots -> assets (apple.com first, kein Stock)."""
     import json
@@ -1071,6 +1113,13 @@ def main():
     p_tts.add_argument("--provider", default=None, help="TTS: edge, elevenlabs, minimax, 60db, say (default edge)")
     p_tts.add_argument("--lang", default="en", help="Sprache en/de etc (default en)")
 
+    # render (Phase 8)
+    p_render = sub.add_parser("render", help="Phase 8: Render 1080x1920 aus Assets + Voiceover")
+    p_render.add_argument("--run-dir", default=None, help="Run-Verzeichnis (default: neuester in ~/.verticals/runs)")
+    p_render.add_argument("--niche", default=None, help="Niche für Fallback (default aus Run)")
+    p_render.add_argument("--out", default=None, help="Runs-Basis dir (default ~/.verticals/runs)")
+    p_render.add_argument("--lang", default="en", help="Sprache (default en)")
+
     # prune
     p_prune = sub.add_parser("prune", help="Cleanup: work dirs nach Upload + alte media")
     p_prune.add_argument("--work-dir", default=None, help="Einzelnes work_* Verzeichnis nach Upload löschen")
@@ -1112,6 +1161,9 @@ def main():
         return
     if args.cmd == "tts":
         cmd_tts(args)
+        return
+    if args.cmd == "render":
+        cmd_render(args)
         return
 
     maybe_run_setup(args)
@@ -1168,6 +1220,8 @@ def main():
         cmd_asset(args)
     elif args.cmd == "tts":
         cmd_tts(args)
+    elif args.cmd == "render":
+        cmd_render(args)
 
 
 if __name__ == "__main__":
