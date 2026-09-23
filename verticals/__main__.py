@@ -668,6 +668,59 @@ def cmd_visual(args):
         print(f"  WARN: Fallback ({result.get('_error','')})")
     return out_path
 
+def cmd_asset(args):
+    """Asset Resolver Phase 6: shots -> assets (apple.com first, kein Stock)."""
+    import json
+    from pathlib import Path
+    from .config import RUNS_DIR
+    from .asset_resolver import resolve_assets, save_assets
+
+    run_dir = getattr(args, "run_dir", None)
+    if run_dir:
+        run_dir = Path(run_dir)
+    else:
+        base = Path(getattr(args, "out", None)) if getattr(args, "out", None) else RUNS_DIR
+        if args.niche:
+            candidates = sorted(base.glob(f"*_{args.niche}_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not candidates:
+                candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        else:
+            candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            print(f"  Kein Run gefunden in {base}")
+            sys.exit(1)
+        run_dir = candidates[0]
+
+    if not (run_dir / "shots.json").exists():
+        # fallback visual.json
+        if (run_dir / "visual.json").exists():
+            # copy to shots.json alias
+            import shutil
+            shutil.copy(run_dir / "visual.json", run_dir / "shots.json")
+        else:
+            print(f"  shots.json fehlt in {run_dir} — erst visual ausführen")
+            sys.exit(1)
+    if not (run_dir / "editorial.json").exists() or not (run_dir / "articles.json").exists():
+        print(f"  editorial/articles fehlt in {run_dir}")
+        sys.exit(1)
+
+    shots_data = json.loads((run_dir / "shots.json").read_text())
+    editorial = json.loads((run_dir / "editorial.json").read_text())
+    editorial_clean = {k: v for k, v in editorial.items() if not k.startswith("_")}
+    articles = json.loads((run_dir / "articles.json").read_text())
+
+    print(f"\n  Asset Resolver für {run_dir.name} — {len(shots_data.get('shots',[]))} shots")
+    assets = resolve_assets(shots_data, editorial_clean, articles, run_dir)
+    save_assets(run_dir, assets)
+    found = len([a for a in assets if a["status"] == "found"])
+    missing = len([a for a in assets if a["status"] == "missing"])
+    synthetic = len([a for a in assets if a["status"] == "synthetic"])
+    print(f"  Assets → {run_dir / 'assets.json'} ({found} found, {synthetic} synthetic, {missing} missing)")
+    for a in assets:
+        mark = {"found": "✓", "missing": "✗", "synthetic": "○"}.get(a["status"], "?")
+        print(f"    [{mark}] {a['shot_idx']:2} [{a['story_id']}] {a['asset_type']:22} {a['preferred_source']:12} -> {a['status']:9} {a['url'] or ''[:50]} {a.get('width') or ''}x{a.get('height') or ''}")
+    return run_dir / "assets.json"
+
 def cmd_ingest(args):
     """RSS (+Reddit Phase2) → normalized articles → runs/<ts>/ persistence."""
     import json
@@ -962,6 +1015,12 @@ def main():
     p_visual.add_argument("--out", default=None, help="Runs-Basis dir (default ~/.verticals/runs)")
     p_visual.add_argument("--provider", default=None, help="LLM: gemini, openai, claude, ollama (default auto)")
 
+    # asset (Phase 6)
+    p_asset = sub.add_parser("asset", help="Phase 6: Asset Resolver apple.com → missing (kein Stock)")
+    p_asset.add_argument("--run-dir", default=None, help="Run-Verzeichnis (default: neuester in ~/.verticals/runs)")
+    p_asset.add_argument("--niche", default=None, help="Niche für latest-Fallback (default auto)")
+    p_asset.add_argument("--out", default=None, help="Runs-Basis dir (default ~/.verticals/runs)")
+
     # prune
     p_prune = sub.add_parser("prune", help="Cleanup: work dirs nach Upload + alte media")
     p_prune.add_argument("--work-dir", default=None, help="Einzelnes work_* Verzeichnis nach Upload löschen")
@@ -997,6 +1056,9 @@ def main():
         return
     if args.cmd == "visual":
         cmd_visual(args)
+        return
+    if args.cmd == "asset":
+        cmd_asset(args)
         return
 
     maybe_run_setup(args)
@@ -1049,6 +1111,8 @@ def main():
         cmd_script(args)
     elif args.cmd == "visual":
         cmd_visual(args)
+    elif args.cmd == "asset":
+        cmd_asset(args)
 
 
 if __name__ == "__main__":
