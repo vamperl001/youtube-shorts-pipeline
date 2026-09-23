@@ -668,6 +668,48 @@ def cmd_visual(args):
         print(f"  WARN: Fallback ({result.get('_error','')})")
     return out_path
 
+def cmd_tts(args):
+    """TTS Phase 7: script -> voiceover.mp3 (Edge frei)."""
+    import json
+    from pathlib import Path
+    from .config import RUNS_DIR
+    from .tts_resolver import resolve_tts, save_tts
+
+    run_dir = getattr(args, "run_dir", None)
+    if run_dir:
+        run_dir = Path(run_dir)
+    else:
+        base = Path(getattr(args, "out", None)) if getattr(args, "out", None) else RUNS_DIR
+        if args.niche:
+            candidates = sorted(base.glob(f"*_{args.niche}_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not candidates:
+                candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        else:
+            candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            print(f"  Kein Run gefunden in {base}")
+            sys.exit(1)
+        run_dir = candidates[0]
+
+    if not (run_dir / "script.json").exists():
+        print(f"  script.json fehlt in {run_dir} — erst script ausführen")
+        sys.exit(1)
+
+    script = json.loads((run_dir / "script.json").read_text())
+    script_clean = {k: v for k, v in script.items() if not k.startswith("_")}
+    niche = getattr(args, "niche", None) or script.get("_meta", {}).get("niche") or "apple"
+    if not niche or niche == "general":
+        parts = run_dir.name.split("_")
+        if len(parts) >= 3:
+            niche = parts[-2] if parts[-2] in ["apple", "general", "tech", "selfhosting"] else "apple"
+    lang = getattr(args, "lang", "en") or "en"
+    provider = getattr(args, "provider", None)
+    print(f"\n  TTS für {run_dir.name} — {script_clean.get('word_count',0)} Worte, Niche {niche}, Lang {lang}, Provider {provider or 'edge'}")
+    tts_meta = resolve_tts(script_clean, run_dir, niche=niche, lang=lang, provider=provider)
+    save_tts(run_dir, tts_meta)
+    print(f"  TTS → {run_dir / tts_meta['file_path']} ({tts_meta['duration']}s, {tts_meta['word_count']} Worte, voice {tts_meta.get('voice_id','')})")
+    return run_dir / tts_meta["file_path"]
+
 def cmd_asset(args):
     """Asset Resolver Phase 6: shots -> assets (apple.com first, kein Stock)."""
     import json
@@ -1021,6 +1063,14 @@ def main():
     p_asset.add_argument("--niche", default=None, help="Niche für latest-Fallback (default auto)")
     p_asset.add_argument("--out", default=None, help="Runs-Basis dir (default ~/.verticals/runs)")
 
+    # tts (Phase 7)
+    p_tts = sub.add_parser("tts", help="Phase 7: TTS Edge (frei) aus script full_script")
+    p_tts.add_argument("--run-dir", default=None, help="Run-Verzeichnis (default: neuester in ~/.verticals/runs)")
+    p_tts.add_argument("--niche", default=None, help="Niche für Voice (default aus Run)")
+    p_tts.add_argument("--out", default=None, help="Runs-Basis dir (default ~/.verticals/runs)")
+    p_tts.add_argument("--provider", default=None, help="TTS: edge, elevenlabs, minimax, 60db, say (default edge)")
+    p_tts.add_argument("--lang", default="en", help="Sprache en/de etc (default en)")
+
     # prune
     p_prune = sub.add_parser("prune", help="Cleanup: work dirs nach Upload + alte media")
     p_prune.add_argument("--work-dir", default=None, help="Einzelnes work_* Verzeichnis nach Upload löschen")
@@ -1059,6 +1109,9 @@ def main():
         return
     if args.cmd == "asset":
         cmd_asset(args)
+        return
+    if args.cmd == "tts":
+        cmd_tts(args)
         return
 
     maybe_run_setup(args)
@@ -1113,6 +1166,8 @@ def main():
         cmd_visual(args)
     elif args.cmd == "asset":
         cmd_asset(args)
+    elif args.cmd == "tts":
+        cmd_tts(args)
 
 
 if __name__ == "__main__":
