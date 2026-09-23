@@ -752,6 +752,98 @@ def cmd_render(args):
     print(f"  Render → {run_dir / meta['final_path']} ({meta['duration']}s, {meta['shots']} shots, captions={'ja' if meta['has_captions'] else 'nein'})")
     return run_dir / meta["final_path"]
 
+def cmd_qc(args):
+    """QC Phase 9: checks -> qc.json"""
+    from pathlib import Path
+    from .config import RUNS_DIR
+    from .qc import run_qc, save_qc
+    run_dir = getattr(args, "run_dir", None)
+    if run_dir:
+        run_dir = Path(run_dir)
+    else:
+        base = Path(getattr(args, "out", None)) if getattr(args, "out", None) else RUNS_DIR
+        if args.niche:
+            candidates = sorted(base.glob(f"*_{args.niche}_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not candidates:
+                candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        else:
+            candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            print(f"  Kein Run gefunden in {base}")
+            sys.exit(1)
+        run_dir = candidates[0]
+    print(f"\n  QC für {run_dir.name}")
+    qc = run_qc(run_dir)
+    save_qc(run_dir, qc)
+    # pretty
+    for layer, res in qc.get("checks", {}).items():
+        mark = "✓" if res.get("pass") else "✗"
+        pending = " (pending)" if res.get("pending") else ""
+        print(f"    [{mark}] {layer:10} {res.get('pass')} {pending}")
+        if not res.get("pass") and not res.get("pending"):
+            # print fails
+            for k, v in res.items():
+                if k not in ("pass", "pending") and not v:
+                    print(f"         - {k} fail")
+    print(f"  QC → {run_dir / 'qc.json'} ({'PASS' if qc.get('pass') else 'FAIL'}{', pending' if qc.get('pending') else ''})")
+    if not qc.get("pass") and not qc.get("pending"):
+        print("  WARN: QC FAIL — YouTube Upload blockiert")
+    return run_dir / "qc.json"
+
+def cmd_youtube(args):
+    """YouTube Phase 10: final.mp4 -> private upload."""
+    from pathlib import Path
+    from .config import RUNS_DIR
+    from .qc import run_qc
+    from .youtube import upload_youtube, save_youtube
+    run_dir = getattr(args, "run_dir", None)
+    if run_dir:
+        run_dir = Path(run_dir)
+    else:
+        base = Path(getattr(args, "out", None)) if getattr(args, "out", None) else RUNS_DIR
+        if args.niche:
+            candidates = sorted(base.glob(f"*_{args.niche}_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not candidates:
+                candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        else:
+            candidates = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            print(f"  Kein Run gefunden in {base}")
+            sys.exit(1)
+        run_dir = candidates[0]
+    # QC gate
+    qc = run_qc(run_dir)
+    if not qc.get("pass") and not qc.get("pending"):
+        print(f"  QC FAIL in {run_dir.name} — Upload blockiert (qc.json)")
+        for layer, res in qc["checks"].items():
+            if not res.get("pass"):
+                print(f"    {layer}: {res}")
+        if not getattr(args, "force", False):
+            print("  Mit --force trotzdem uploaden? (nicht empfohlen)")
+            import sys
+            sys.exit(1)
+    else:
+        print(f"  QC {'PASS' if qc.get('pass') else 'PENDING'} — Upload freigegeben")
+    lang = getattr(args, "lang", "en") or "en"
+    privacy = getattr(args, "privacy", "private") or "private"
+    print(f"\n  YouTube Upload für {run_dir.name} lang={lang} privacy={privacy}")
+    # dry-run?
+    if getattr(args, "dry_run", False):
+        print("  Dry-run: kein Upload, nur Meta")
+        # build meta without upload
+        from .youtube import _build_youtube_metadata
+        import json
+        editorial = json.loads((run_dir / "editorial.json").read_text()) if (run_dir / "editorial.json").exists() else {}
+        script = json.loads((run_dir / "script.json").read_text()) if (run_dir / "script.json").exists() else {}
+        meta = _build_youtube_metadata(editorial, script)
+        print(f"    Titel: {meta['youtube_title']}")
+        print(f"    Tags: {meta['youtube_tags']}")
+        return None
+    yt_meta = upload_youtube(run_dir, lang=lang, privacy=privacy)
+    save_youtube(run_dir, yt_meta)
+    print(f"  YouTube → {yt_meta['url']}")
+    return yt_meta["url"]
+
 def cmd_asset(args):
     """Asset Resolver Phase 6: shots -> assets (apple.com first, kein Stock)."""
     import json
@@ -1120,6 +1212,22 @@ def main():
     p_render.add_argument("--out", default=None, help="Runs-Basis dir (default ~/.verticals/runs)")
     p_render.add_argument("--lang", default="en", help="Sprache (default en)")
 
+    # qc (Phase 9)
+    p_qc = sub.add_parser("qc", help="Phase 9: QC Checks -> qc.json")
+    p_qc.add_argument("--run-dir", default=None, help="Run-Verzeichnis (default: neuester in ~/.verticals/runs)")
+    p_qc.add_argument("--niche", default=None, help="Niche für latest-Fallback")
+    p_qc.add_argument("--out", default=None, help="Runs-Basis dir (default ~/.verticals/runs)")
+
+    # youtube (Phase 10)
+    p_youtube = sub.add_parser("youtube", help="Phase 10: YouTube Upload (private) aus final.mp4")
+    p_youtube.add_argument("--run-dir", default=None, help="Run-Verzeichnis (default: neuester in ~/.verticals/runs)")
+    p_youtube.add_argument("--niche", default=None, help="Niche für latest-Fallback")
+    p_youtube.add_argument("--out", default=None, help="Runs-Basis dir (default ~/.verticals/runs)")
+    p_youtube.add_argument("--lang", default="en", help="Sprache (default en)")
+    p_youtube.add_argument("--privacy", default="private", choices=["private", "unlisted", "public"], help="Privacy (default private)")
+    p_youtube.add_argument("--dry-run", action="store_true", help="Nur Meta anzeigen, kein Upload")
+    p_youtube.add_argument("--force", action="store_true", help="Trotz QC FAIL uploaden")
+
     # prune
     p_prune = sub.add_parser("prune", help="Cleanup: work dirs nach Upload + alte media")
     p_prune.add_argument("--work-dir", default=None, help="Einzelnes work_* Verzeichnis nach Upload löschen")
@@ -1164,6 +1272,12 @@ def main():
         return
     if args.cmd == "render":
         cmd_render(args)
+        return
+    if args.cmd == "qc":
+        cmd_qc(args)
+        return
+    if args.cmd == "youtube":
+        cmd_youtube(args)
         return
 
     maybe_run_setup(args)
@@ -1222,6 +1336,10 @@ def main():
         cmd_tts(args)
     elif args.cmd == "render":
         cmd_render(args)
+    elif args.cmd == "qc":
+        cmd_qc(args)
+    elif args.cmd == "youtube":
+        cmd_youtube(args)
 
 
 if __name__ == "__main__":
