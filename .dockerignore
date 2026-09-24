@@ -1,0 +1,12 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+.venv
+venv
+tests
+examples
+references
+*.log
+daily_run*.bak*
+daily_run_old.sh
