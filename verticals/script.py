@@ -131,13 +131,15 @@ def _niche_context(niche: str) -> str:
 def build_script_prompt(editorial: dict, articles: list[dict], edition: str, niche: str = "apple") -> str:
     story_ctx = _build_story_context(editorial, articles)
     niche_ctx = _niche_context(niche)
-    word_target = "140 to 165 words total (intro + 3-5 stories + outro), ~60-75 seconds at 155 wpm"
-    # try to get from niche
+    # Feintuning 24.09.: apple 140-165 zu lang für Edge TTS (130 wpm -> 70s), neu 110-145 (42-55s)
+    word_target = "110 to 140 words total (intro + 3-5 stories + outro), ~45-55 seconds at 155 wpm"
     try:
         profile = load_niche(niche)
         wc = profile.get("script", {}).get("word_count", "")
-        if wc:
+        if wc and niche != "apple":
             word_target = f"{wc} words total (intro+stories+outro)"
+        elif niche == "apple":
+            word_target = "110 to 140 words total (intro+stories+outro), ~45-55 seconds at 155 wpm"
     except Exception:
         pass
 
@@ -152,7 +154,8 @@ EDITORIAL STORIES (3-5, already selected, use story_id verbatim):
 {story_ctx}
 
 TASK:
-- Write intro (1 sentence, greeting + date, e.g. "Good morning, it's September 22 — three Apple headlines in 60 seconds.")
+- Write intro (1 sentence, greeting, NO date — e.g. "Good morning — three Apple headlines in 60 seconds.")
+- NEVER mention the edition date, weekday, or "today/tonight" in intro or stories. The video must stay watchable without a date.
 - For each story_id in order, write 1-2 sentences (12-22 words each) spoken text.
   * Use ONLY facts from SOURCES above, never invent.
   * Clearly distinguish rumor vs reported/confirmed: say "reportedly" / "according to ..." for rumor.
@@ -172,7 +175,23 @@ def _estimate_duration(text: str) -> int:
     # 155 wpm = 2.58 wps
     return max(6, min(22, round(words / 2.6)))
 
-def _validate_script(data: dict, editorial: dict) -> tuple[bool, str]:
+def _strip_spoken_date(text: str) -> str:
+    """Remove spoken dates ("September 24th", "it's 2026-09-24", weekday + date).
+    Safety net when the LLM ignores the no-date rule — video stays dateless."""
+    import re
+    t = text
+    t = re.sub(r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+", "", t)
+    t = re.sub(r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?\b", "", t)
+    t = re.sub(r"\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\b", "", t)
+    t = re.sub(r",\s*,", ",", t)
+    # übrig gebliebenes "it is / it's" vor Komma (z. B. "it is , and") entfernen
+    t = re.sub(r",?\s*\bit['\u2019]?s?\s+is\s*,", ",", t)
+    t = re.sub(r"\s{2,}", " ", t).strip(" ,-")
+    t = re.sub(r"it's\s+(?=—|-|,)", "it's ", t)
+    return t
+
+
+def _validate_script(data: dict, editorial: dict, niche: str = "apple") -> tuple[bool, str]:
     if not isinstance(data, dict):
         return False, "not a dict"
     if "intro" not in data or not isinstance(data["intro"], str) or len(data["intro"].split()) < 3:
@@ -197,38 +216,43 @@ def _validate_script(data: dict, editorial: dict) -> tuple[bool, str]:
             return False, f"duplicate story_id {sid}"
         seen.add(sid)
         text = s.get("text", "")
-        if not text or not isinstance(text, str) or len(text.split()) < 6:
+        if not text or not isinstance(text, str) or len(text.split()) < 8:
             return False, f"story {sid} text short"
         dur = s.get("duration_target")
         if not isinstance(dur, int) or not (6 <= dur <= 30):
             return False, f"story {sid} duration_target {dur} not in 6-30"
-    # total words check 80-200
     full = data["intro"] + " " + " ".join(s["text"] for s in stories) + " " + data["outro"]
     wc = len(full.split())
-    if not (80 <= wc <= 220):
-        return False, f"total words {wc} not in 80-220"
+    # Feintuning 24.09. 50 Runs: 125 avg, 5× <100, 9× TTS>60 — neu 110-140 (42-54s @155wpm, 47-60s @139wpm)
+    if niche == "apple":
+        if not (110 <= wc <= 140):
+            return False, f"apple total words {wc} not in 110-140"
+    else:
+        if not (80 <= wc <= 220):
+            return False, f"total words {wc} not in 80-220"
     return True, ""
 
 def _fallback_script(editorial: dict, edition: str) -> dict:
-    """Deterministic fallback: headlines + reason as spoken text."""
-    intro = f"Good morning, it's {edition} — {len(editorial.get('stories',[]))} Apple headlines in one minute."
+    """Deterministic fallback: headlines + reason, auf ~130 Worte gestreckt (24.09. Tuning)."""
+    intro = f"Good morning — {len(editorial.get('stories',[]))} Apple headlines in one minute, curated for {edition}."
     stories = []
     for s in editorial.get("stories", []):
         sid = s.get("story_id")
         headline = s.get("headline", "")
         reason = s.get("reason", "")
-        # simple 1-sentence from headline + reason
-        text = f"{headline}. {reason}"
-        # trim to ~18 words
+        # 2 Sätze: Headline + Reason etwas ausführlicher
+        text = f"{headline}. {reason} Stay tuned for more details on this story."
         words = text.split()
-        if len(words) > 22:
-            text = " ".join(words[:22]) + "."
+        if len(words) < 18:
+            text += " This update matters for your Apple setup."
+        elif len(words) > 26:
+            text = " ".join(words[:26]) + "."
         stories.append({
             "story_id": sid,
             "text": text,
             "duration_target": _estimate_duration(text),
         })
-    outro = "More tomorrow — save this before your next update."
+    outro = "More tomorrow — save this before your next update and follow for daily Apple news."
     full = intro + " " + " ".join(s["text"] for s in stories) + " " + outro
     return {
         "edition": edition,
@@ -274,8 +298,14 @@ def generate_script(editorial: dict, articles: list[dict], edition: str | None =
                 s["headline"] = ed.get("headline", s.get("headline",""))
                 s["sources"] = ed.get("sources", [])
                 s["status"] = ed.get("status", "reported")
-            ok, err = _validate_script(data, editorial)
+            ok, err = _validate_script(data, editorial, niche=niche)
             if ok:
+                # Safety net: Datumsreste aus gesprochenem Text entfernen
+                # (Prompt-Regel wird nicht immer befolgt).
+                data["intro"] = _strip_spoken_date(data["intro"])
+                for x in data.get("stories", []):
+                    if isinstance(x.get("text"), str):
+                        x["text"] = _strip_spoken_date(x["text"])
                 full = data["intro"] + " " + " ".join(x["text"] for x in data["stories"]) + " " + data["outro"]
                 data["full_script"] = full
                 data["word_count"] = len(full.split())

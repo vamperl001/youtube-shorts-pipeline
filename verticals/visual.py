@@ -124,7 +124,7 @@ def build_visual_prompt(script: dict, editorial: dict, edition: str, niche: str 
     intro = script.get("intro", "")[:150]
     outro = script.get("outro", "")[:100]
     return f"""You are a visual director for an Apple news Short (9:16, 1080x1920).
-TASK: For each story_id, describe ONE visual (no URLs, no invented image links).
+TASK: For each story_id, describe TWO to THREE visuals (fast cuts keep Shorts alive — one static image per story is boring).
 
 EDITION: {edition}
 NICHE: {niche}
@@ -137,19 +137,20 @@ STORIES (in order, with duration):
 {story_block}
 
 Rules:
-- One shot per story_id, plus optional intro/outro title_card if useful.
+- TWO to THREE shots per story_id (different angles/details per shot, e.g. wide product shot, close-up detail, lifestyle/in-use). Durations split the story duration_target (each shot 3-8s, sum ≈ duration_target).
+- Plus optional intro/outro title_card (3s each) if useful.
 - For each shot, specify:
   * subject: 2-5 words, what is shown (e.g. "iPhone 18 Pro camera module")
   * asset_type: one of {', '.join(sorted(ALLOWED_ASSET_TYPES))} — prefer official_product_image or official_screenshot for Apple, press_image for news sites, title_card for intro/outro.
-  * preferred_source: one of {', '.join(sorted(ALLOWED_SOURCES))} — apple.com first for Apple products, then macrumors/9to5 for news.
+  * preferred_source: one of {', '.join(sorted(ALLOWED_SOURCES))} — vary sources across a story's shots (apple.com, then macrumors/9to5/...) so different images resolve.
   * description: 1 sentence, photorealistic detail for resolver (e.g. "close-up of iPhone 18 Pro titanium frame, studio lighting, 4K").
-  * duration: integer seconds, should match story duration_target (6-22) or 3 for title_card.
+  * duration: integer seconds, 3-8 per story shot (sum ≈ story duration_target), 3 for title_card.
 
 Output ONLY JSON:
-{{"edition":"{edition}","shots":[{{"story_id":"s_01","idx":0,"duration":12,"subject":"iPhone 18 Pro","asset_type":"official_product_image","preferred_source":"apple.com","description":"..."}}]}}
-- idx: 0-based order, sequential.
+{{"edition":"{edition}","shots":[{{"story_id":"s_01","idx":0,"duration":6,"subject":"iPhone 18 Pro","asset_type":"official_product_image","preferred_source":"apple.com","description":"..."}},{{"story_id":"s_01","idx":1,"duration":6,"subject":"iPhone camera close-up","asset_type":"official_screenshot","preferred_source":"macrumors.com","description":"..."}}]}}
+- idx: 0-based order, sequential across ALL shots.
 - story_id must be from STORIES above (or "intro"/"outro" for title cards).
-- duration: int 3-22.
+- duration: int 3-8 (story shots), 3 (title_card).
 - Do NOT include url, image link, or html.
 """
 
@@ -162,9 +163,9 @@ def _validate_visual(data: dict, editorial: dict, script: dict) -> tuple[bool, s
     shots = data.get("shots")
     if not isinstance(shots, list) or not shots:
         return False, "shots missing/empty"
-    # allow 3-7 shots (3-5 stories + intro/outro)
-    if not (3 <= len(shots) <= 7):
-        return False, f"shots count {len(shots)} not in 3-7"
+    # 2-3 shots per story: 3-5 stories + intro/outro -> 6-16 shots
+    if not (6 <= len(shots) <= 16):
+        return False, f"shots count {len(shots)} not in 6-16 (need 2-3 per story)"
     ed_ids = {s.get("story_id") for s in editorial.get("stories", [])}
     ed_ids.add("intro")
     ed_ids.add("outro")
@@ -182,8 +183,8 @@ def _validate_visual(data: dict, editorial: dict, script: dict) -> tuple[bool, s
             return False, f"duplicate idx {idx}"
         seen_idx.add(idx)
         dur = sh.get("duration")
-        if not isinstance(dur, int) or not (3 <= dur <= 22):
-            return False, f"shot {i} duration {dur} not in 3-22"
+        if not isinstance(dur, int) or not (3 <= dur <= 8):
+            return False, f"shot {i} duration {dur} not in 3-8"
         subj = sh.get("subject", "")
         if not subj or not isinstance(subj, str) or len(subj.split()) < 1:
             return False, f"shot {i} subject missing"
@@ -199,10 +200,26 @@ def _validate_visual(data: dict, editorial: dict, script: dict) -> tuple[bool, s
         # forbid URLs in description
         if "http" in desc.lower():
             return False, f"shot {i} description contains URL"
+    # per-story coverage: 2-3 shots, durations sum ≈ story duration_target (±4s)
+    from collections import Counter
+    per_story = Counter(sh.get("story_id") for sh in shots)
+    s_targets = {s.get("story_id"): s.get("duration_target", 12)
+                 for s in (script.get("stories", []) if isinstance(script, dict) else [])}
+    for sid, n in per_story.items():
+        if sid in ("intro", "outro"):
+            continue
+        if n < 2:
+            return False, f"story {sid} has only {n} shot(s), need 2-3"
+        if n > 4:
+            return False, f"story {sid} has {n} shots, max 4"
+        total = sum(sh.get("duration", 0) for sh in shots if sh.get("story_id") == sid)
+        target = s_targets.get(sid, 12)
+        if abs(total - target) > 4:
+            return False, f"story {sid} shots sum {total}s != target {target}s"
     return True, ""
 
 def _fallback_visual(editorial: dict, script: dict, edition: str, niche: str = "apple") -> dict:
-    """Deterministic: 1 shot per story, official_product_image apple.com, title_card for intro/outro if needed."""
+    """Deterministic: 2 shots per story (split duration), title_card intro/outro."""
     shots = []
     # intro title_card
     shots.append({
@@ -216,23 +233,35 @@ def _fallback_visual(editorial: dict, script: dict, edition: str, niche: str = "
     })
     idx = 1
     # use script duration or editorial importance to estimate
-    for s in script.get("stories", []):
+    sources_cycle = ["apple.com", "macrumors.com", "9to5mac.com", "appleinsider.com"]
+    for j, s in enumerate(script.get("stories", [])):
         sid = s.get("story_id")
         # try to infer subject from headline
         headline = next((e.get("headline","") for e in editorial.get("stories", []) if e.get("story_id")==sid), s.get("headline",""))
         # simple subject: first 3 words of headline
         subj = " ".join(headline.split()[:4])[:40] or "Apple product"
         dur = s.get("duration_target", 12)
-        # clamp 6-22
-        dur = max(6, min(22, dur))
+        # split into 2 shots (3-8s each)
+        d1 = max(3, min(8, dur // 2))
+        d2 = max(3, min(8, dur - d1))
         shots.append({
             "story_id": sid,
             "idx": idx,
-            "duration": dur,
+            "duration": d1,
             "subject": subj,
             "asset_type": "official_product_image",
             "preferred_source": "apple.com",
             "description": f"Official Apple product image for {subj}, studio lighting, 4K, clean background",
+        })
+        idx += 1
+        shots.append({
+            "story_id": sid,
+            "idx": idx,
+            "duration": d2,
+            "subject": subj + " detail",
+            "asset_type": "press_image",
+            "preferred_source": sources_cycle[(j + 1) % len(sources_cycle)],
+            "description": f"Close-up detail of {subj}, news photo style, 4K",
         })
         idx += 1
     shots.append({

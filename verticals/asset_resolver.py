@@ -91,6 +91,23 @@ def _fetch_og_image(page_url: str, timeout: int = 10) -> tuple[str | None, int |
         log(f"og:image fetch fehlgeschlagen {page_url[:60]}: {e}")
         return None, None
 
+def _looks_like_logo_placeholder(im) -> bool:
+    """Erkennt Logo-Platzhalter (z. B. graues Apple-Logo auf Weiß, 24.09. im Video):
+    fast nur Weiß + kaum Farbvarianz. Solche og:images (Apple-Fallback wenn die
+    Produktseite kein echtes Bild liefert) wirken im Video wie ein Fehler."""
+    try:
+        small = im.convert("RGB").resize((64, 64))
+        px = list(small.getdata())
+        white = sum(1 for r, g, b in px if r > 235 and g > 235 and b > 235)
+        if white / len(px) < 0.88:
+            return False
+        import statistics
+        gray = [(r + g + b) / 3 for r, g, b in px]
+        return statistics.pstdev(gray) < 40
+    except Exception:
+        return False
+
+
 def _download_image(img_url: str, dest: Path, timeout: int = 15) -> tuple[bool, str | None, str | None, int | None, int | None, float | None]:
     """Download image, return (ok, content_type, hash, width, height, ratio)."""
     headers = {"User-Agent": "verticals/1.0 (+asset-resolver)", "Accept": "image/*,*/*"}
@@ -117,6 +134,13 @@ def _download_image(img_url: str, dest: Path, timeout: int = 15) -> tuple[bool, 
                 im = Image.open(BytesIO(data))
                 w, h2 = im.size
                 ratio = round(w / h2, 2) if h2 else None
+                # Mindestgröße: Thumbnails/Logos (<40KB oder <500px) ablehnen
+                if len(data) < 40_000 or (w and h2 and min(w, h2) < 500):
+                    log(f"Bild zu klein/Thumbnail, übersprungen ({img_url[:60]}, {len(data)//1024}KB {w}x{h2})")
+                    return False, content_type, None, None, None, None
+                if _looks_like_logo_placeholder(im):
+                    log(f"Logo-Platzhalter erkannt, übersprungen ({img_url[:60]})")
+                    return False, content_type, None, None, None, None
             except Exception:
                 pass
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -186,6 +210,7 @@ def resolve_assets(shots_data: dict, editorial: dict, articles: list[dict], run_
     assets_dir.mkdir(parents=True, exist_ok=True)
     shots = shots_data.get("shots", [])
     assets = []
+    story_pos: dict[str, int] = {}
     for shot in shots:
         idx = shot.get("idx")
         story_id = shot.get("story_id")
@@ -226,6 +251,14 @@ def resolve_assets(shots_data: dict, editorial: dict, articles: list[dict], run_
 
         candidates = _candidate_urls_for_shot(shot, editorial, articles)
         asset["candidate_urls"] = [u for u, _ in candidates]
+        # Rotation pro Story-Position: Shots derselben Story starten bei
+        # unterschiedlichen Kandidaten (sonst landet 2x dasselbe og:image).
+        # Erster Shot jeder Story behält die Best-Reihenfolge (apple.com zuerst).
+        pos = story_pos.get(story_id or "", 0)
+        story_pos[story_id or ""] = pos + 1
+        if len(candidates) > 1 and pos > 0:
+            rot = pos % len(candidates)
+            candidates = candidates[rot:] + candidates[:rot]
         found = False
         for cand_url, cand_domain in candidates:
             # für press_image: nur wenn candidate domain zu asset_type passt? ponytail: alle erlaubten Domains ok

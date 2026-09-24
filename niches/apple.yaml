@@ -12,7 +12,7 @@ script:
   cta_variants:
     - "Follow for daily Apple breakdowns."
     - "Save this before your next upgrade."
-  word_count: "140 to 165"
+  word_count: "110 to 140"  # 24.09. Feintuning 50 Runs: 125 avg, 5× <100, 9× TTS>60 -> 110-140 (42-54s @155wpm, 47-60s @139wpm)
 visuals:
   style: "clean Apple store lighting, device close-ups, iOS screens"
   prompt_suffix: "photorealistic, clean lighting, high detail, 4K"
