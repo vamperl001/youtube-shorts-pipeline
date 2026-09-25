@@ -13,7 +13,11 @@ def _check_editorial(editorial: dict, articles: list[dict]) -> dict:
     try:
         article_ids = {a.get("article_id") for a in articles}
         stories = editorial.get("stories", [])
-        checks["has_stories"] = 3 <= len(stories) <= 5
+        # musik/manual: 1 Story ok, sonst 3-5
+        if len(articles) <= 2:
+            checks["has_stories"] = 1 <= len(stories) <= 3
+        else:
+            checks["has_stories"] = 3 <= len(stories) <= 5
         checks["no_empty_sources"] = all(s.get("sources") for s in stories)
         checks["sources_exist"] = all(src in article_ids for s in stories for src in s.get("sources", []))
         checks["no_duplicate_headlines"] = len({s.get("headline","").lower()[:50] for s in stories}) == len(stories)
@@ -35,7 +39,11 @@ def _check_script(script: dict, editorial: dict) -> dict:
         checks["no_short_text"] = all(len(s.get("text","").split()) >= 6 for s in script.get("stories", []))
         full = script.get("intro","") + " " + " ".join(s.get("text","") for s in script.get("stories", [])) + " " + script.get("outro","")
         wc = len(full.split())
-        checks["word_count_ok"] = 80 <= wc <= 220
+        # musik 1 Story: 30+ ok, apple 110-140, sonst 80-220
+        if len(script.get("stories", [])) <= 1:
+            checks["word_count_ok"] = 30 <= wc <= 160
+        else:
+            checks["word_count_ok"] = 80 <= wc <= 220
         checks["has_word_count"] = "word_count" in script
         checks["pass"] = all(v for k, v in checks.items() if k != "pass")
     except Exception as e:
@@ -57,7 +65,7 @@ def _check_assets(assets: list[dict], shots: list[dict]) -> dict:
         checks["found_or_synthetic"] = found + synthetic >= len(shots) * 0.5  # at least half found/synthetic
         checks["no_stock"] = all(a.get("source_domain") != "stock" for a in assets)  # we never use stock
         # url reachable: for found, check url exists and domain allowed
-        allowed = {"apple.com", "macrumors.com", "9to5mac.com", "appleinsider.com", "cultofmac.com", "synthetic"}
+        allowed = {"apple.com", "macrumors.com", "9to5mac.com", "appleinsider.com", "cultofmac.com", "synthetic", "local"}
         checks["domain_allowed"] = all((a.get("source_domain") in allowed) or a.get("status") in ("missing","synthetic") for a in assets)
         # resolution: for found, width >=800 and height >=600
         def _res_ok(a):

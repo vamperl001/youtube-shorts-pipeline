@@ -26,6 +26,7 @@ ALLOWED_SOURCES = {
     "9to5mac.com",
     "appleinsider.com",
     "cultofmac.com",
+    "local",
 }
 
 def _strip_fences(raw: str) -> str:
@@ -123,6 +124,33 @@ def build_visual_prompt(script: dict, editorial: dict, edition: str, niche: str 
     niche_ctx = _niche_visual_context(niche)
     intro = script.get("intro", "")[:150]
     outro = script.get("outro", "")[:100]
+    if niche in ("musik", "music", "education"):
+        return f"""Du bist Bildregie für ein Musik-Erklärvideo Short (9:16, 1080x1920, deutsch).
+AUFGABE: Pro story_id 2 Visuals (eigene Bilder aus Musikschule, kein Stock).
+
+EDITION: {edition}
+NICHE: {niche}
+{niche_ctx}
+
+INTRO: {intro}
+OUTRO: {outro}
+
+STORIES:
+{story_block}
+
+Regeln:
+- 2 Shots pro story_id (z.B. Drum-Set total, Hände close-up). Dauer je 3-8s, Summe ≈ duration_target.
+- Plus intro/outro title_card (3s).
+- subject: 2-5 Wörter deutsch (z.B. "Schlagzeug Becken").
+- asset_type: official_product_image oder press_image oder title_card.
+- preferred_source: IMMER "local" (eigene Digikam-Bilder, keine URLs).
+- description: 1 Satz deutsch.
+- duration: int 3-8, title_card 3.
+- KEINE URLs, KEIN Apple.
+
+NUR JSON:
+{{"edition":"{edition}","shots":[{{"story_id":"s_01","idx":0,"duration":6,"subject":"Schlagzeug","asset_type":"official_product_image","preferred_source":"local","description":"..."}}]}}
+"""
     return f"""You are a visual director for an Apple news Short (9:16, 1080x1920).
 TASK: For each story_id, describe TWO to THREE visuals (fast cuts keep Shorts alive — one static image per story is boring).
 
@@ -163,8 +191,12 @@ def _validate_visual(data: dict, editorial: dict, script: dict) -> tuple[bool, s
     shots = data.get("shots")
     if not isinstance(shots, list) or not shots:
         return False, "shots missing/empty"
-    # 2-3 shots per story: 3-5 stories + intro/outro -> 6-16 shots
-    if not (6 <= len(shots) <= 16):
+    # 2-3 shots per story: 1 story (musik) -> 2-5 shots, 3-5 stories -> 6-16 shots
+    n_ed = len(editorial.get("stories", []))
+    if n_ed <= 1:
+        if not (2 <= len(shots) <= 5):
+            return False, f"shots count {len(shots)} not in 2-5 (single story)"
+    elif not (6 <= len(shots) <= 16):
         return False, f"shots count {len(shots)} not in 6-16 (need 2-3 per story)"
     ed_ids = {s.get("story_id") for s in editorial.get("stories", [])}
     ed_ids.add("intro")
@@ -221,19 +253,21 @@ def _validate_visual(data: dict, editorial: dict, script: dict) -> tuple[bool, s
 def _fallback_visual(editorial: dict, script: dict, edition: str, niche: str = "apple") -> dict:
     """Deterministic: 2 shots per story (split duration), title_card intro/outro."""
     shots = []
-    # intro title_card
+    is_musik = niche in ("musik", "music", "education")
+    intro_subj = "Musik Unterricht Intro" if is_musik else "Apple news intro"
+    intro_desc = "Minimal title card Musikschule, warmes Licht, 4K" if is_musik else "Minimal title card with Apple logo, clean white studio lighting, 4K"
     shots.append({
         "story_id": "intro",
         "idx": 0,
         "duration": 3,
-        "subject": "Apple news intro",
+        "subject": intro_subj,
         "asset_type": "title_card",
-        "preferred_source": "apple.com",
-        "description": "Minimal title card with Apple logo, clean white studio lighting, 4K",
+        "preferred_source": "local" if is_musik else "apple.com",
+        "description": intro_desc,
     })
     idx = 1
     # use script duration or editorial importance to estimate
-    sources_cycle = ["apple.com", "macrumors.com", "9to5mac.com", "appleinsider.com"]
+    sources_cycle = ["local", "local"] if is_musik else ["apple.com", "macrumors.com", "9to5mac.com", "appleinsider.com"]
     for j, s in enumerate(script.get("stories", [])):
         sid = s.get("story_id")
         # try to infer subject from headline
@@ -264,14 +298,16 @@ def _fallback_visual(editorial: dict, script: dict, edition: str, niche: str = "
             "description": f"Close-up detail of {subj}, news photo style, 4K",
         })
         idx += 1
+    outro_subj = "Musik Unterricht Outro" if is_musik else "Apple news outro"
+    outro_desc = "Minimal outro title card Musikschule, 'Morgen mehr', warm, 4K" if is_musik else "Minimal outro title card with Apple logo and 'More tomorrow', clean, 4K"
     shots.append({
         "story_id": "outro",
         "idx": idx,
         "duration": 3,
-        "subject": "Apple news outro",
+        "subject": outro_subj,
         "asset_type": "title_card",
-        "preferred_source": "apple.com",
-        "description": "Minimal outro title card with Apple logo and 'More tomorrow', clean, 4K",
+        "preferred_source": "local" if is_musik else "apple.com",
+        "description": outro_desc,
     })
     return {"edition": edition, "shots": shots, "_fallback": True}
 

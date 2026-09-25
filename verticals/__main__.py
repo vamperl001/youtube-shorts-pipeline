@@ -507,8 +507,13 @@ def cmd_editorial(args):
             edition = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     provider = getattr(args, "provider", None)
-    print(f"\n  Editorial für {run_dir.name} — {len(articles)} Artikel, {len(community)} Reddit-Signale, Edition {edition}, Provider {provider or 'auto'}")
-    result = select_editorial(articles, community, edition=edition, provider=provider)
+    niche = getattr(args, "niche", None) or "apple"
+    try:
+        niche = niche or run_dir.name.split("_")[-2]
+    except Exception:
+        niche = "apple"
+    print(f"\n  Editorial für {run_dir.name} — {len(articles)} Artikel, {len(community)} Reddit-Signale, Edition {edition}, Niche {niche}, Provider {provider or 'auto'}")
+    result = select_editorial(articles, community, edition=edition, provider=provider, niche=niche)
 
     # QC: validate already done in select_editorial, but save QC info
     qc_ok = "_fallback" not in result
@@ -575,11 +580,14 @@ def cmd_script(args):
         # parse niche from run_dir like 2026-09-22T..._apple_...
         parts = run_dir.name.split("_")
         if len(parts) >= 3:
-            niche = parts[-2] if parts[-2] in ["apple", "general", "tech", "selfhosting"] else "apple"
+            niche = parts[-2] if parts[-2] in ["apple", "general", "tech", "selfhosting", "musik", "music", "education"] else "apple"
+    lang = getattr(args, "lang", None)
+    if not lang:
+        lang = "de" if niche in ("musik", "music", "education") else "en"
 
     provider = getattr(args, "provider", None)
-    print(f"\n  Script für {run_dir.name} — {len(editorial_clean.get('stories',[]))} Stories, Niche {niche}, Provider {provider or 'auto'}")
-    result = generate_script(editorial_clean, articles, edition=editorial_clean.get("edition"), niche=niche, provider=provider)
+    print(f"\n  Script für {run_dir.name} — {len(editorial_clean.get('stories',[]))} Stories, Niche {niche}, Lang {lang}, Provider {provider or 'auto'}")
+    result = generate_script(editorial_clean, articles, edition=editorial_clean.get("edition"), niche=niche, provider=provider, lang=lang)
 
     qc_ok = "_fallback" not in result
     out_path = run_dir / "script.json"
@@ -589,11 +597,12 @@ def cmd_script(args):
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "provider": provider or "auto",
         "niche": niche,
+        "lang": lang,
         "qc_pass": qc_ok,
         "word_count": result.get("word_count", 0),
     }
     out_path.write_text(json.dumps(to_save, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"  Script → {out_path} ({result.get('word_count',0)} Worte, qc={'pass' if qc_ok else 'fallback'})")
+    print(f"  Script → {out_path} ({result.get('word_count',0)} Worte [{lang}], qc={'pass' if qc_ok else 'fallback'})")
     print(f"  Intro: {result.get('intro','')[:100]}")
     for s in result.get("stories", []):
         print(f"    {s['story_id']}: {s['text'][:80]} ({s.get('duration_target',0)}s)")
@@ -641,7 +650,7 @@ def cmd_visual(args):
     if not niche or niche == "general":
         parts = run_dir.name.split("_")
         if len(parts) >= 3:
-            niche = parts[-2] if parts[-2] in ["apple", "general", "tech", "selfhosting"] else "apple"
+            niche = parts[-2] if parts[-2] in ["apple", "general", "tech", "selfhosting", "musik", "music", "education"] else "apple"
     provider = getattr(args, "provider", None)
     print(f"\n  Visual für {run_dir.name} — {len(script_clean.get('stories',[]))} Stories, Niche {niche}, Provider {provider or 'auto'}")
     result = generate_visual_plan(script_clean, editorial_clean, edition=script_clean.get("edition"), niche=niche, provider=provider)
@@ -701,8 +710,10 @@ def cmd_tts(args):
     if not niche or niche == "general":
         parts = run_dir.name.split("_")
         if len(parts) >= 3:
-            niche = parts[-2] if parts[-2] in ["apple", "general", "tech", "selfhosting"] else "apple"
-    lang = getattr(args, "lang", "en") or "en"
+            niche = parts[-2] if parts[-2] in ["apple", "general", "tech", "selfhosting", "musik", "music", "education"] else "apple"
+    lang = getattr(args, "lang", None)
+    if not lang:
+        lang = script.get("_meta", {}).get("lang") or ("de" if niche in ("musik", "music", "education") else "en")
     provider = getattr(args, "provider", None)
     print(f"\n  TTS für {run_dir.name} — {script_clean.get('word_count',0)} Worte, Niche {niche}, Lang {lang}, Provider {provider or 'edge'}")
     tts_meta = resolve_tts(script_clean, run_dir, niche=niche, lang=lang, provider=provider)
@@ -845,7 +856,7 @@ def cmd_youtube(args):
     return yt_meta["url"]
 
 def cmd_asset(args):
-    """Asset Resolver Phase 6: shots -> assets (apple.com first, kein Stock)."""
+    """Asset Resolver Phase 6: shots -> assets (apple.com/local -> missing, kein Stock)."""
     import json
     from pathlib import Path
     from .config import RUNS_DIR
@@ -868,9 +879,7 @@ def cmd_asset(args):
         run_dir = candidates[0]
 
     if not (run_dir / "shots.json").exists():
-        # fallback visual.json
         if (run_dir / "visual.json").exists():
-            # copy to shots.json alias
             import shutil
             shutil.copy(run_dir / "visual.json", run_dir / "shots.json")
         else:
@@ -884,9 +893,19 @@ def cmd_asset(args):
     editorial = json.loads((run_dir / "editorial.json").read_text())
     editorial_clean = {k: v for k, v in editorial.items() if not k.startswith("_")}
     articles = json.loads((run_dir / "articles.json").read_text())
+    # niche for local assets (musik/education -> _Channel_Musik)
+    niche = getattr(args, "niche", None)
+    if not niche:
+        # try from run_dir name or editorial meta
+        try:
+            niche = editorial.get("_meta", {}).get("niche") or run_dir.name.split("_")[-2]
+        except Exception:
+            niche = "apple"
+        if niche not in ["musik", "music", "education", "apple", "general"]:
+            niche = "apple"
 
-    print(f"\n  Asset Resolver für {run_dir.name} — {len(shots_data.get('shots',[]))} shots")
-    assets = resolve_assets(shots_data, editorial_clean, articles, run_dir)
+    print(f"\n  Asset Resolver für {run_dir.name} — {len(shots_data.get('shots',[]))} shots (niche {niche})")
+    assets = resolve_assets(shots_data, editorial_clean, articles, run_dir, niche=niche)
     save_assets(run_dir, assets)
     found = len([a for a in assets if a["status"] == "found"])
     missing = len([a for a in assets if a["status"] == "missing"])
@@ -954,12 +973,30 @@ def cmd_ingest(args):
     runs_dir = Path(getattr(args, "out", None)) if getattr(args, "out", None) else RUNS_DIR
     with_reddit = bool(getattr(args, "with_reddit", False))
     reddit_limit = getattr(args, "reddit_limit", 10) or 10
+    manual_topic = getattr(args, "topic", None)
 
     from .niche import load_niche, get_discovery_config
     profile = load_niche(niche)
     discovery = get_discovery_config(profile)
     feeds = discovery.get("rss") or []
-    if not feeds:
+    # Manuelles Thema für musik/education (kein RSS nötig) — ponytail: 1 Artikel statt News-Pool
+    if manual_topic and niche in ("musik", "music", "education"):
+        from datetime import datetime, timezone
+        import hashlib
+        run_dir = create_run_dir(runs_dir, niche)
+        print(f"\n  Run dir: {run_dir}")
+        print(f"  Manuelles Thema [{niche}]: {manual_topic}")
+        aid = "manual_" + hashlib.sha256(manual_topic.encode()).hexdigest()[:12]
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        article = {"article_id": aid, "source": "manual", "source_type": "manual", "url": "", "canonical_url": "", "guid": aid, "title": manual_topic, "summary": manual_topic, "content": manual_topic, "published_at": now, "fetched_at": now, "entities": [], "topics": [], "source_quality": "manual", "status": "reported", "raw": {}}
+        save_articles(run_dir, [article])
+        save_sources(run_dir, [{"feed_url": "manual", "status": "ok", "http_status": 200, "bozo": False, "bozo_exception": None, "entries_fetched": 1, "entries_kept": 1, "error": None, "fetched_at": now, "duration_ms": 0, "raw_hash": None, "raw_path": None, "feed_title": "manual", "articles": [article]}], niche=niche, limit=limit)
+        print(f"  Articles: 1 manual → {run_dir / 'articles.json'}")
+        return run_dir
+    if not feeds and niche in ("musik", "music", "education"):
+        print(f"  Niche '{niche}' hat kein RSS — nutze --topic 'Dein Thema' für Education/Musik")
+        sys.exit(1)
+    elif not feeds:
         print(f"  No RSS feeds in niche '{niche}' (niches/{niche}.yaml discovery.rss)")
         sys.exit(1)
 
@@ -1168,6 +1205,7 @@ def main():
     p_ingest.add_argument("--replay", default=None, help="Offline replay from existing run dir (no network)")
     p_ingest.add_argument("--with-reddit", action="store_true", help="Reddit-Signal miterfassen (Phase 2, non-blocking)")
     p_ingest.add_argument("--reddit-limit", type=int, default=10, help="Max Reddit-Signale je Run (default 10)")
+    p_ingest.add_argument("--topic", default=None, help="Manuelles Thema für musik/education (ohne RSS, z.B. 'Paradiddle für Anfänger')")
 
     # editorial (Phase 3)
     p_editorial = sub.add_parser("editorial", help="Phase 3: Editorial 3-5 Stories aus Pool (LLM)")
@@ -1183,6 +1221,7 @@ def main():
     p_script.add_argument("--niche", default=None, help="Niche für latest-Fallback / Tone (default aus Run)")
     p_script.add_argument("--out", default=None, help="Runs-Basis dir (default ~/.verticals/runs)")
     p_script.add_argument("--provider", default=None, help="LLM: gemini, openai, claude, ollama (default auto)")
+    p_script.add_argument("--lang", default=None, help="Sprache de/en (default aus Run, musik->de)")
 
     # visual (Phase 5)
     p_visual = sub.add_parser("visual", help="Phase 5: Visual Plan Shotlist ohne URLs (LLM)")

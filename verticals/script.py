@@ -128,7 +128,7 @@ def _niche_context(niche: str) -> str:
     except Exception:
         return ""
 
-def build_script_prompt(editorial: dict, articles: list[dict], edition: str, niche: str = "apple") -> str:
+def build_script_prompt(editorial: dict, articles: list[dict], edition: str, niche: str = "apple", lang: str = "en") -> str:
     story_ctx = _build_story_context(editorial, articles)
     niche_ctx = _niche_context(niche)
     # Feintuning 24.09.: apple 140-165 zu lang für Edge TTS (130 wpm -> 70s), neu 110-145 (42-55s)
@@ -143,6 +143,30 @@ def build_script_prompt(editorial: dict, articles: list[dict], edition: str, nic
     except Exception:
         pass
 
+    if lang == "de":
+        return f"""Du schreibst ein gesprochenes Musik-Erklärvideo für YouTube Shorts (60 Sekunden, {word_target}).
+Stimme: gesprochen, warm, natürlich, reines Deutsch, KEIN Denglisch.
+REGEL: Schreibe den GESAMTEN Text auf Deutsch. Kein einziges englisches Wort, außer Eigennamen (Ableton, Paradiddle, Hi-Hat). Kein "like and subscribe".
+
+EDITION: {edition}
+NICHE: {niche}
+{niche_ctx}
+
+EDITORIAL STORIES (use story_id verbatim):
+{story_ctx}
+
+AUFGABE:
+- Intro (1 Satz, Begrüßung, KEIN Datum — z.B. "Hallo — ein Schlagzeug-Tipp in 60 Sekunden.")
+- NIEMALS Datum, Wochentag oder "heute/heute Abend" nennen. Video muss zeitlos bleiben.
+- Pro story_id 1-2 Sätze (12-22 Wörter), nur Fakten aus SOURCES, nichts erfinden.
+- Outro (1 Satz, z.B. "Morgen mehr. Hol dir das PDF — Link in der Beschreibung.")
+- Total {word_target}.
+
+Output NUR JSON:
+{{"edition":"{edition}","intro":"...","stories":[{{"story_id":"s_01","text":"...","duration_target":12}}],"outro":"..."}}
+- story_id exakt aus Editorial, duration_target in Sekunden (Wörter/2.6).
+- Kein Markdown, keine englischen Sätze, nur JSON.
+"""
     return f"""You are writing a spoken Apple news briefing for YouTube Shorts (60-75 seconds, {word_target}).
 Voice: spoken, natural, no clickbait caps, no "like and subscribe".
 
@@ -223,17 +247,41 @@ def _validate_script(data: dict, editorial: dict, niche: str = "apple") -> tuple
             return False, f"story {sid} duration_target {dur} not in 6-30"
     full = data["intro"] + " " + " ".join(s["text"] for s in stories) + " " + data["outro"]
     wc = len(full.split())
-    # Feintuning 24.09. 50 Runs: 125 avg, 5× <100, 9× TTS>60 — neu 110-140 (42-54s @155wpm, 47-60s @139wpm)
+    # Feintuning 24.09. 50 Runs + musik 1-Story 25.09.: apple 110-140, musik 30+ ok
     if niche == "apple":
         if not (110 <= wc <= 140):
             return False, f"apple total words {wc} not in 110-140"
+    elif niche in ("musik", "music", "education"):
+        if not (30 <= wc <= 160):
+            return False, f"musik total words {wc} not in 30-160"
     else:
         if not (80 <= wc <= 220):
             return False, f"total words {wc} not in 80-220"
+    # kein Denglisch für de: keine englischen Standardsätze im deutschen Script
+    if niche in ("musik", "music", "education"):
+        joined = full.lower()
+        for bad in ["like and subscribe", "what's up guys", "in today's video", "good morning —", "more tomorrow"]:
+            if bad in joined:
+                return False, f"denglisch '{bad}' in de-script"
     return True, ""
 
-def _fallback_script(editorial: dict, edition: str) -> dict:
+def _fallback_script(editorial: dict, edition: str, niche: str = "apple") -> dict:
     """Deterministic fallback: headlines + reason, auf ~130 Worte gestreckt (24.09. Tuning)."""
+    if niche in ("musik", "music", "education"):
+        intro = f"Hallo — ein Musik-Tipp in 60 Sekunden."
+        stories = []
+        for s in editorial.get("stories", []):
+            sid = s.get("story_id")
+            headline = s.get("headline", "")
+            reason = s.get("reason", "")
+            text = f"{headline}. {reason} Bleib dran für mehr Details zu diesem Thema."
+            words = text.split()
+            if len(words) < 15:
+                text += " Das hilft dir direkt beim Üben."
+            stories.append({"story_id": sid, "text": text, "duration_target": _estimate_duration(text)})
+        outro = "Morgen mehr — hol dir das PDF, Link in der Beschreibung."
+        full = intro + " " + " ".join(s["text"] for s in stories) + " " + outro
+        return {"edition": edition, "intro": intro, "stories": stories, "outro": outro, "full_script": full, "word_count": len(full.split()), "_fallback": True}
     intro = f"Good morning — {len(editorial.get('stories',[]))} Apple headlines in one minute, curated for {edition}."
     stories = []
     for s in editorial.get("stories", []):
@@ -264,15 +312,18 @@ def _fallback_script(editorial: dict, edition: str) -> dict:
         "_fallback": True,
     }
 
-def generate_script(editorial: dict, articles: list[dict], edition: str | None = None, niche: str = "apple", provider: str | None = None, max_tokens: int = 1800) -> dict:
+def generate_script(editorial: dict, articles: list[dict], edition: str | None = None, niche: str = "apple", provider: str | None = None, max_tokens: int = 1800, lang: str = "en") -> dict:
     """Main entry: 1 LLM call, 3 attempts, validation, fallback."""
     if not editorial or not editorial.get("stories"):
         raise ValueError("No editorial stories")
     edition = edition or editorial.get("edition") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     edition = str(edition)[:10]
     niche = niche or "apple"
+    # musik/education default deutsch, ponytail: kein Denglisch
+    if not lang or lang == "auto":
+        lang = "de" if niche in ("musik", "music", "education") else "en"
 
-    base_prompt = build_script_prompt(editorial, articles, edition, niche=niche)
+    base_prompt = build_script_prompt(editorial, articles, edition, niche=niche, lang=lang)
     prompt = base_prompt
     last_err = None
     raw_response = None
@@ -329,7 +380,7 @@ def generate_script(editorial: dict, articles: list[dict], edition: str | None =
             continue
 
     log(f"Script: alle 3 Versuche fehlgeschlagen ({last_err}) — Fallback")
-    fb = _fallback_script(editorial, edition)
+    fb = _fallback_script(editorial, edition, niche=niche)
     fb["_llm_raw"] = (raw_response or "")[:4000]
     fb["_error"] = str(last_err)
     # enrich fallback with headline/sources/status

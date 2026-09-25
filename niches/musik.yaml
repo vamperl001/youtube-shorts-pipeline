@@ -1,0 +1,76 @@
+name: musik
+display_name: "Musik & Unterricht"
+description: "Musikschule, Schlagzeug, Piano, Ableton — kurze Erklärvideos für Schüler und Interessierte."
+
+script:
+  tone: "warm, erfahren, ermutigend — Lehrer spricht mit Schüler, nicht über ihn"
+  pacing: "ruhig, klar, ein Gedanke pro Satz, kurze Pausen"
+  word_count: "110 to 140"
+  hooks:
+    - id: mistake
+      template: "Diesen Fehler machen 90% am Schlagzeug — und er kostet dich Wochen."
+      when: "technik fehler"
+    - id: aha
+      template: "In 60 Sekunden verstehst du {topic} — versprochen."
+      when: "erklärung"
+    - id: before_after
+      template: "So klingst du vorher — so danach. Der Unterschied ist {topic}."
+      when: "vergleich"
+  cta_variants:
+    - "Folg für tägliche 60-Sekunden-Tipps."
+    - "Kommentier: Welches Thema soll ich morgen erklären?"
+    - "Hol dir das PDF — Link in der Beschreibung."
+  forbidden_phrases:
+    - "like and subscribe"
+    - "smash that bell"
+    - "what's up guys"
+    - "in today's video"
+  structure:
+    opening: "Hook in 3 Sekunden, Problem benennen."
+    middle: "3 kurze Punkte, je 1 Satz, mit Bild."
+    closing: "Takeaway + CTA (PDF/Probestunde)."
+
+visuals:
+  style: "Musikschule warmes Licht, Schlagzeug, Piano, Noten, Ableton-Screen, keine Stock-Clipart"
+  mood: "einladend, konzentriert, handgemacht"
+  prompt_suffix: "photorealistic, warm lighting, high detail, 4K, authentic music school"
+  subjects:
+    prefer:
+      - "drum set close-up"
+      - "piano keys hands"
+      - "sheet music"
+      - "Ableton Live screen"
+      - "student practicing"
+    avoid:
+      - "stock photo smiling at laptop"
+      - "neon cyberpunk"
+      - "clipart"
+
+voice:
+  pace: "ruhig, ~145 wpm"
+  energy: "warm, ruhig, klar"
+  suggested_voices:
+    edge_tts:
+      de: "de-DE-ConradNeural"
+      en: "en-US-GuyNeural"
+    edge:
+      de: "de-DE-ConradNeural"
+      en: "en-US-GuyNeural"
+
+captions:
+  highlight_color: "#FFD700"
+  words_per_group: 3
+  font_family: "DejaVu Sans"
+  font_size: 64
+
+music:
+  mood: "akustisch, leicht, keine Vocals"
+  energy: "low"
+
+thumbnail:
+  style: "warmes Licht, Instrument im Fokus, großer Text links"
+  max_words: 4
+
+discovery:
+  rss: []  # Musik-Education nutzt eigene Themen, kein News-RSS
+  reddit: []  # optional: ["drums", "piano", "WeAreTheMusicMakers"]

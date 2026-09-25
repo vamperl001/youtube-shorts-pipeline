@@ -119,10 +119,35 @@ def _build_community_text(signals: list[dict], max_signals: int = 10) -> str:
     return "\n".join(lines)
 
 
-def build_prompt(articles: list[dict], community: list[dict], edition: str) -> str:
+def build_prompt(articles: list[dict], community: list[dict], edition: str, niche: str = "apple") -> str:
     pool = _build_pool_text(articles)
     comm = _build_community_text(community)
     allowed = ", ".join(a.get("article_id","") for a in articles)
+    if niche in ("musik", "music", "education"):
+        n = len(articles)
+        want = "genau 1 Story" if n <= 2 else "1-3 Stories"
+        return f"""Du bist Musiklehrer-Redakteur für 60-Sekunden Erklärvideos (deutsch, kein Denglisch).
+AUFGABE: Wähle {want} aus POOL. IDs exakt kopieren. Nichts erfinden. Alles auf Deutsch.
+
+POOL ({len(articles)} Themen):
+{pool}
+
+ERLAUBTE IDS (exakt kopieren):
+{allowed}
+
+EDITION: {edition}
+
+REGELN:
+- HEADLINE 5-10 Wörter, deutsch, sachlich, kein Clickbait.
+- SOURCES: 1 article_id aus ALLOWED IDS, exakt kopieren.
+- STATUS: immer "reported" (eigene Themen, keine Gerüchte).
+- IMPORTANCE 0.5-0.9.
+- REASON 1 Satz deutsch.
+- KEIN Apple, KEIN iPhone erfinden — nur das Thema aus POOL.
+
+NUR JSON:
+{{"edition":"{edition}","stories":[{{"story_id":"s_01","headline":"...","importance":0.7,"status":"reported","sources":["ID1"],"reason":"..."}}]}}
+"""
     return f"""You are an Apple news editor for a 60-second briefing (Frontrunners style).
 TASK: Select exactly 3-5 stories from POOL. Copy IDs verbatim. Never invent.
 
@@ -196,7 +221,11 @@ def _validate(edition_data: dict, articles: list[dict], edition_expected: str) -
     stories = edition_data.get("stories")
     if not isinstance(stories, list):
         return False, "stories not a list"
-    if not (3 <= len(stories) <= 5):
+    # musik/manual: 1 Artikel -> 1 Story ok, sonst 3-5
+    if len(articles) <= 2:
+        if not (1 <= len(stories) <= 3):
+            return False, f"stories count {len(stories)} not in 1-3 (small pool)"
+    elif not (3 <= len(stories) <= 5):
         return False, f"stories count {len(stories)} not in 3-5"
     article_ids = {a.get("article_id") for a in articles}
     seen_ids = set()
@@ -246,7 +275,7 @@ def _fallback_selection(articles: list[dict], edition: str) -> dict:
     return {"edition": edition, "stories": stories, "_fallback": True}
 
 
-def select_editorial(articles: list[dict], community: list[dict] | None = None, edition: str | None = None, provider: str | None = None, max_tokens: int = 2200) -> dict:
+def select_editorial(articles: list[dict], community: list[dict] | None = None, edition: str | None = None, provider: str | None = None, max_tokens: int = 2200, niche: str = "apple") -> dict:
     """Main entry: 1 LLM call, 3 attempts, validation+repair, fallback."""
     community = community or []
     if not articles:
@@ -256,7 +285,7 @@ def select_editorial(articles: list[dict], community: list[dict] | None = None, 
     else:
         edition = str(edition)[:10]
 
-    base_prompt = build_prompt(articles, community, edition)
+    base_prompt = build_prompt(articles, community, edition, niche=niche)
     prompt = base_prompt
     last_err = None
     raw_response = None

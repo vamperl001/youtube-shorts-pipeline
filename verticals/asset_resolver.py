@@ -203,7 +203,38 @@ def _candidate_urls_for_shot(shot: dict, editorial: dict, articles: list[dict]) 
             deduped.append((url, dom))
     return deduped[:5]
 
-def resolve_assets(shots_data: dict, editorial: dict, articles: list[dict], run_dir: Path, timeout: int = 10) -> list[dict]:
+def _local_image_for_shot(shot: dict, niche: str) -> Path | None:
+    """Für musik/education: suche passendes Bild in _Channel_Musik (Symlink, kein Download)."""
+    if niche not in ("musik", "education", "music"):
+        return None
+    import random
+    base = Path("/srv/storage/digikam/Pictures/_Channel_Musik")
+    if not base.exists():
+        return None
+    subject = shot.get("subject", "").lower()
+    # sammle alle Bilder in _Channel_Musik
+    candidates = list(base.rglob("*.JPG")) + list(base.rglob("*.jpg")) + list(base.rglob("*.png"))
+    if not candidates:
+        return None
+    # einfache Keyword-Match: subject Worte vs Pfad
+    keywords = [w for w in re.findall(r"[a-z]{3,}", subject) if w not in {"mit", "und", "für", "das", "der", "die"}]
+    scored = []
+    for p in candidates:
+        name = p.name.lower()
+        score = sum(1 for kw in keywords if kw in name)
+        # bonus für musik-Theater etc.
+        if "musik" in str(p).lower():
+            score += 0.5
+        scored.append((score, p))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    # nimm bestes mit Score>0, sonst random
+    if scored and scored[0][0] > 0:
+        return scored[0][1]
+    # fallback random, aber deterministisch pro shot idx (ponytail: kein random)
+    idx = shot.get("idx", 0)
+    return candidates[idx % len(candidates)]
+
+def resolve_assets(shots_data: dict, editorial: dict, articles: list[dict], run_dir: Path, timeout: int = 10, niche: str = "apple") -> list[dict]:
     """Hauptfunktion: löse alle Shots auf, speichere assets/*.jpg, return assets list."""
     run_dir = Path(run_dir)
     assets_dir = run_dir / "assets"
@@ -248,6 +279,54 @@ def resolve_assets(shots_data: dict, editorial: dict, articles: list[dict], run_
             assets.append(asset)
             log(f"Asset {idx} [{story_id}] title_card -> synthetic")
             continue
+
+        # 0. Lokal: für musik/education eigene Bilder (Symlink, kein Download, ponytail: kein Stock)
+        if niche in ("musik", "education", "music"):
+            local = _local_image_for_shot(shot, niche)
+            if local and local.exists():
+                dest = assets_dir / f"shot_{idx:02d}.jpg"
+                try:
+                    # symlink target auflösen und kopieren (für ffmpeg muss Datei kopiert sein, nicht Link)
+                    import shutil
+                    # wenn symlink, folge Link
+                    src_path = local.resolve() if local.is_symlink() else local
+                    # validiere Bildgröße wie bei Download
+                    if HAS_PIL:
+                        try:
+                            from PIL import Image as PILImage
+                            im = PILImage.open(src_path)
+                            w, h = im.size
+                            if min(w, h) < 500 or src_path.stat().st_size < 40_000:
+                                raise ValueError("zu klein")
+                            if _looks_like_logo_placeholder(im):
+                                raise ValueError("logo")
+                        except Exception as e:
+                            log(f"Lokal Bild übersprungen {local.name}: {e}")
+                            local = None
+                        else:
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(src_path, dest)
+                            # hash
+                            h = hashlib.sha256(dest.read_bytes()).hexdigest()[:16]
+                            w, h2 = im.size
+                            ratio = round(w / h2, 2) if h2 else None
+                            asset.update({
+                                "status": "found",
+                                "url": f"file://{src_path}",
+                                "source_domain": "local",
+                                "http_status": 200,
+                                "content_type": "image/jpeg",
+                                "width": w,
+                                "height": h2,
+                                "ratio": ratio,
+                                "hash": h,
+                                "file_path": f"assets/shot_{idx:02d}.jpg",
+                            })
+                            log(f"Asset {idx} [{story_id}] local found {src_path.name} {w}x{h2}")
+                            assets.append(asset)
+                            continue
+                except Exception as e:
+                    log(f"Lokal copy fehlgeschlagen {local}: {e}")
 
         candidates = _candidate_urls_for_shot(shot, editorial, articles)
         asset["candidate_urls"] = [u for u, _ in candidates]
